@@ -1,1 +1,16 @@
+# Core scientific stack
+matplotlib
+
+# Spiking Neural Networks (theory / neuroscience)
 brian2
+
+# Machine-learning-oriented SNNs
+torch
+torchvision
+torchaudio
+norse
+
+# Optional portability layer
+PyNN
+
+# Utilities
