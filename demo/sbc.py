@@ -16,7 +16,7 @@ model = SimpleBinaryClassification()
 # Define input spikes
 model.input.set_spikes(
     indices=[0,0],
-    times=[0,5.5]*ms
+    times=[0,10.0]*ms
 )
 
 net = Network(*model.get_objects())

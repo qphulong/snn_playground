@@ -11,7 +11,7 @@ class SimpleBinaryClassification:
 
         # -------- Output neuron (LIF) --------
         eqs = '''
-        dv/dt = (-v) / (3*ms) : 1
+        dv/dt = (-v) / (8*ms) : 1
         '''
 
         self.output = NeuronGroup(
@@ -28,8 +28,8 @@ class SimpleBinaryClassification:
             self.output,
             model='''
             w : 1
-            dapre/dt = -apre / (4*ms) : 1 (event-driven)
-            dapost/dt = -apost / (4*ms) : 1 (event-driven)
+            dapre/dt = -apre / (8*ms) : 1 (event-driven)
+            dapost/dt = -apost / (8*ms) : 1 (event-driven)
             ''',
             on_pre='''
             v_post += w
@@ -38,12 +38,12 @@ class SimpleBinaryClassification:
             ''',
             on_post='''
             apost += -0.01
-            w = clip(w + apre, 0, 1)
+            w = clip(w + apre + (-v_post + 1.01)*0.5, 0, 1)
             '''
         )
 
         self.syn.connect()
-        self.syn.w = 1
+        self.syn.w = 0.95
 
         # -------- Monitors --------
         self.spikes_in = SpikeMonitor(self.input)
