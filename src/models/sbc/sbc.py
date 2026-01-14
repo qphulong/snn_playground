@@ -12,10 +12,11 @@ class SimpleBinaryClassification:
         # -------- Output neuron (LIF) --------
         eqs = '''
         dv/dt = (-v) / (8*ms) : 1
+        v_pre_spike : 1
         '''
 
         self.output = NeuronGroup(
-            N=1,
+            N=10,
             model=eqs,
             threshold='v > 1.0',
             reset='v = 0.0',
@@ -37,19 +38,20 @@ class SimpleBinaryClassification:
             w = clip(w + apost, 0, 1)
             ''',
             on_post='''
+            v_pre_spike = v_post
             apost += -0.01
             w = clip(w + apre + (-v_post + 1.01)*0.5, 0, 1)
             '''
         )
 
         self.syn.connect()
-        self.syn.w = 0.95
+        self.syn.w = 1
 
         # -------- Monitors --------
         self.spikes_in = SpikeMonitor(self.input)
         self.spikes_out = SpikeMonitor(self.output)
-        self.wmon = StateMonitor(self.syn, 'w', record=0)
-        self.vmon = StateMonitor(self.output, 'v', record=0)
+        self.wmon = StateMonitor(self.syn, 'w', record=True)
+        self.vmon = StateMonitor(self.output, 'v', record=True)
 
     def get_objects(self):
         return [
