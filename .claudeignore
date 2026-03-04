@@ -3,3 +3,5 @@ output/
 __pycache__/
 nest-volume/
 datasets/
+demo/
+src/
