@@ -1,0 +1,50 @@
+ What was built
+
+  Python backend (all verified working)
+
+  ┌─────────────────────────────────┬───────────────────────────────────────────────────────────────────────────┐
+  │             Module              │                                  Purpose                                  │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ snn_core/audio_encoding.py      │ Audio → (N_in, T) current matrix                                          │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ snn_core/layers/lif.py          │ AdaptiveLIF, SimpleLIF                                                    │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ snn_core/layers/connectivity.py │ DenseConnectivity, SparseConnectivity, GraphConnectivity                  │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ snn_core/learning_rules/stdp.py │ STDP + homeostatic normalization                                          │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ snn_core/network.py             │ Architecture-agnostic Brian2 network — resolves all types from registries │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ snn_core/training.py            │ Training loop with checkpoint integration                                 │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ config/loader.py                │ YAML deep-merge → validated ExperimentConfig                              │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ storage/checkpoint_manager.py   │ Save/load/list pickle checkpoints                                         │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ storage/model_storage.py        │ HDF5 chunked weight storage for lazy loading                              │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ web_api/app.py                  │ FastAPI app, AppState, startup                                            │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ web_api/routes/model.py         │ /api/model/info, /weights (region), /weights/stats, /connectivity         │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ web_api/routes/metrics.py       │ /api/metrics/history, /weight-evolution, /spike-stats                     │
+  ├─────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ web_api/routes/training.py      │ /api/training/status, /checkpoints, /load-checkpoint, /load-experiment    │
+  └─────────────────────────────────┴───────────────────────────────────────────────────────────────────────────┘
+
+  React frontend (builds clean)
+
+  - Model Info tab: architecture summary pulled from /api/model/info
+  - Training tab: checkpoint list + load-experiment control
+  - Visualizations tab: plugin registry — WeightHeatmap (paged navigation), WeightEvolution (live-polling training curves), SpikeStats
+
+  How to run
+
+  # Training
+  python scripts/train.py --config config/experiments/exp_stdp_baseline.yaml --dataset datasets/vox1_small
+
+  # API
+  uvicorn web_api.app:app --reload --port 8000
+
+  # UI
+  cd web_ui && npm run dev

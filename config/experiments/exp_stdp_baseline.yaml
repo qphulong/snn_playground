@@ -1,0 +1,55 @@
+name: "STDP Baseline (900→900)"
+description: "900 adaptive-LIF input neurons → 900 simple-LIF STDP hidden neurons. Fully connected."
+version: "1.0"
+
+audio:
+  sr: 16000
+  num_filters: 100
+  f_min: 50.0
+  sustained_per_band: 5
+  onset_per_band: 2
+  phase_per_band: 2
+  SCALE: 1.2
+  percentile: 95
+
+network:
+  layers:
+    - name: "input"
+      type: "adaptive_lif"
+      N_neurons: 900
+      neuron_params:
+        tau_m: 10
+        tau_a: 100
+        beta: 0.2
+        v_th: 1.0
+
+    - name: "hidden"
+      type: "simple_lif"
+      N_neurons: 900
+      neuron_params:
+        tau_m: 10
+        v_th: 1.0
+
+  synapses:
+    - name: "input_to_hidden"
+      src_layer: "input"
+      tgt_layer: "hidden"
+      connectivity:
+        type: "dense"
+      learning_rule:
+        type: "stdp"
+        taupre: 20
+        taupost: 20
+        Apre_delta: 0.01
+        Apost_delta: -0.0105
+        wmax: 0.3
+        wmin: 0.0
+        w_init_mean: 0.5
+        homeostasis_norm: 225.0
+        seed: 42
+
+training:
+  max_samples: 5
+  checkpoint_interval: 5
+  dt: 0.1
+  seed: 42

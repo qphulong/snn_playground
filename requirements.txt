@@ -1,7 +1,13 @@
 # Core scientific stack
+numpy
 matplotlib
+scipy
 
-# Spiking Neural Networks (theory / neuroscience)
+# Audio processing
+librosa
+gammatone
+
+# Spiking Neural Networks
 brian2
 
 # Machine-learning-oriented SNNs
@@ -13,4 +19,17 @@ norse
 # Optional portability layer
 PyNN
 
-# Utilities
+# Config
+pyyaml
+
+# Web API
+fastapi
+uvicorn[standard]
+pydantic
+
+# Storage
+h5py
+
+# Dev/notebook
+jupyter
+ipykernel

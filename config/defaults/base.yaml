@@ -1,0 +1,22 @@
+version: "1.0"
+
+audio:
+  sr: 16000
+  num_filters: 100
+  f_min: 50.0
+  sustained_per_band: 5
+  onset_per_band: 2
+  phase_per_band: 2
+  SCALE: 1.2
+  percentile: 95
+
+network:
+  layers: []
+  synapses: []
+
+training:
+  max_samples: 30
+  checkpoint_interval: 5
+  dt: 0.1
+  seed: 42
+  save_weights_history: false
