@@ -1,1 +1,2 @@
-from .audio_utils import load_mel_spectrogram
+from .audio_utils import load_mel_spectrogram, auditory_frontend
+from .spike_encoding import auditory_frontend
