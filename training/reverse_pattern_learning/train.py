@@ -17,8 +17,9 @@ import numpy as np
 import pickle
 from brian2 import *
 
-np.random.seed(42)
-defaultclock.dt = 0.1 * ms
+random_seed = np.random.randint(0, 1_000_000)
+np.random.seed(random_seed)
+defaultclock.dt = 0.01 * ms
 
 # ── output directory ────────────────────────────────────────────────────────
 OUT_DIR = os.path.join('training', 'reverse_pattern_learning')
@@ -32,17 +33,17 @@ SAMPLE_DUR      = 10.0   # ms
 SPIKE_OFFSET_1  =  4.0   # ms  first spike in pattern
 SPIKE_OFFSET_2  =  6.0   # ms  second spike
 
-N_AB = 20
-N_BA = 20
+N_AB = 100
+N_BA = 100
 
 # LIF / membrane
-TAU_M         =  4.0   # ms
+TAU_M         =  2.0   # ms
 V_REST        =  0.0
 V_RESET_VAL   =  0.0   # refractory clamp potential
-V_THRESH_INIT =  1.0   # initial adaptive threshold
+V_THRESH_INIT =  0.60   # initial adaptive threshold
 TAU_THRESH    =  10   # ms  threshold decay
 THRESH_JUMP   =  0.25  # threshold increment on spike
-THRESH_REST   =  0.75  # resting threshold level
+THRESH_REST   =  0.60  # resting threshold level
 REFRAC_MS     =  2.0   # ms
 
 # Lateral inhibition
@@ -51,14 +52,14 @@ LAT_INH       =  0.5
 # STDP
 TAU_SYN_TRACE = 20.0   # ms  pre-synaptic eligibility trace
 TAU_NRN_TRACE = 20.0   # ms  post-synaptic eligibility trace
-A_PLUS        =  0.03
+A_PLUS        =  0.035
 A_MINUS       =  0.025
 SYN_MIN       =  0.0
 SYN_MAX       =  1.0
-SYN_INIT      =  0.5
+SYN_INIT      =  0.75
 
 # Weight normalisation
-NORM_MARGIN   =  1.05
+NORM_MARGIN   =  1.1
 
 # Refractory PSP scaling  (1 - 0.95 = 0.05)
 REFRAC_SCALE  =  0.01
@@ -187,7 +188,7 @@ def run_sample(pattern, init_weights, init_thresh):
     ff.syn_eligibility = 0.0
 
     # ── lateral inhibition ───────────────────────────────────
-    lat = Synapses(out, out, on_pre=f'v_post -= {LAT_INH}', name='lat')
+    lat = Synapses(out, out, on_pre=f'v_post = clip(v_post - {LAT_INH}, 0, inf)', name='lat')
     lat.connect(condition='i != j')
 
     # ── monitors ─────────────────────────────────────────────
@@ -231,7 +232,7 @@ def run_sample(pattern, init_weights, init_thresh):
 # TRAINING LOOP
 # ============================================================
 
-cur_weights = SYN_INIT + np.random.normal(0, 0.5, 4)
+cur_weights = np.array([0.4, 0.6, 0.62, 0.23])
 cur_thresh  = np.full(2, V_THRESH_INIT)
 
 history = dict(
