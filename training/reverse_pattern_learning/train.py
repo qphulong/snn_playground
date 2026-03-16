@@ -1,15 +1,26 @@
 """
 train.py  -  SNN AB/BA pattern discrimination
-==============================================
-Run:   python train.py
-Output: training/reverse_pattern_learning/snn_history.pkl
+============================================================================
+Run:   python3 training/reverse_pattern_learning/train.py
 
-Naming rules to avoid Brian2 namespace conflicts
-  - No variable ending in _pre or _post anywhere
-  - Function args / locals that hold weights or thresholds are named
-    init_weights / init_thresh  (never  w  or  theta  in run_sample scope)
-  - All numeric hyperparameters are baked into equation strings via f-strings
-    so nothing leaks from Python scope into Brian2's run namespace
+This script demonstrates a simple network with 2 layers, each containing 2 neurons,
+fully connected. The goal is for each neuron to learn the AB and BA patterns.
+
+The history of the training process will be saved to a file:
+training/reverse_pattern_learning/snn_history.pkl
+
+Visualization:
+- The training history can be visualized using: 
+  python3 training/reverse_pattern_learning/visualize.py
+  This will show the spiking pattern, how weights evolve, and how the membrane
+  potential changes within each neuron over time.
+
+Naming rules to avoid Brian2 namespace conflicts:
+- No variable ending in _pre or _post anywhere.
+- Function arguments or locals that hold weights or thresholds are named `init_weights` / `init_thresh`
+  (never `w` or `theta` in the `run_sample` scope).
+- All numeric hyperparameters are baked into equation strings via f-strings, so nothing leaks
+  from Python scope into Brian2's run namespace.
 """
 
 import os
@@ -59,7 +70,7 @@ SYN_MAX       =  1.0
 SYN_INIT      =  0.75
 
 # Weight normalisation
-NORM_MARGIN   =  1.2
+NORM_MARGIN   =  1.15
 
 # Refractory PSP scaling  (1 - 0.95 = 0.05)
 REFRAC_SCALE  =  0.01
@@ -232,7 +243,7 @@ def run_sample(pattern, init_weights, init_thresh):
 # TRAINING LOOP
 # ============================================================
 
-cur_weights = np.array([0.4, 0.6, 0.62, 0.23])
+cur_weights = np.array([0.56, 0.72, 0.81, 0.49])
 cur_thresh  = np.full(2, V_THRESH_INIT)
 
 history = dict(
