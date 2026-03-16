@@ -7,7 +7,6 @@ def compute_spike_input_current(
     onset_per_band=2,
     phase_per_band=2,
     scale=1,
-    pct=95,
     sust_gain=1.3,
     onset_gain=2.0,
     phase_gain=1.0,
@@ -29,8 +28,7 @@ def compute_spike_input_current(
         - E   : sustained energy (IHC compressed output)
         - dE  : onset energy (positive temporal derivative)
         - phase : rectified gammatone signal
-    3. Normalize each feature type using a high percentile (default 95th).
-    4. Generate multiple neurons per frequency band:
+    3. Generate multiple neurons per frequency band:
         - sustained neurons (energy response)
         - onset neurons (transient response)
         - phase neurons (phase locking)
@@ -53,9 +51,6 @@ def compute_spike_input_current(
 
     scale : float, default=1
         Global gain multiplier applied to all input currents.
-
-    pct : float, default=95
-        Percentile used for robust normalization of each feature type.
 
     sust_gain : float, default=1.3
         Gain factor for sustained-energy neurons.
@@ -89,14 +84,9 @@ def compute_spike_input_current(
 
     n_channels, T = E.shape
 
-    # percentile normalization
-    E_95 = max(np.percentile(E, pct), 1e-6)
-    dE_95 = max(np.percentile(dE, pct), 1e-6)
-    phase_95 = max(np.percentile(phase, pct), 1e-6)
-
-    g_sust = sust_gain / E_95
-    g_onset = onset_gain / dE_95
-    g_phase = phase_gain / phase_95
+    g_sust = sust_gain
+    g_onset = onset_gain
+    g_phase = phase_gain
 
     neurons_per_band = sustained_per_band + onset_per_band + phase_per_band
     N_in = n_channels * neurons_per_band

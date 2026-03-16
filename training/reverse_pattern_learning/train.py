@@ -59,7 +59,7 @@ SYN_MAX       =  1.0
 SYN_INIT      =  0.75
 
 # Weight normalisation
-NORM_MARGIN   =  1.1
+NORM_MARGIN   =  1.2
 
 # Refractory PSP scaling  (1 - 0.95 = 0.05)
 REFRAC_SCALE  =  0.01

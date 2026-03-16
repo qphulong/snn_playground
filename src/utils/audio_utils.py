@@ -33,7 +33,7 @@ def auditory_frontend(
     sr=16000,
     num_filters=100,
     f_min=50,
-    alpha=4.0,
+    alpha=1.0,
     normalization="global",
     eps=1e-6,
 ):
@@ -58,7 +58,7 @@ def auditory_frontend(
     f_min : float, default=50
         Minimum center frequency (Hz) of the filterbank.
 
-    alpha : float, default=4.0
+    alpha : float, default=1.0
         Compression strength for inner hair cell log compression:
         E = log(1 + alpha * max(signal, 0)).
 
