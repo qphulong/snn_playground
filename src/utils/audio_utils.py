@@ -137,11 +137,17 @@ def auditory_frontend(
     # ==============================
     dE = np.diff(E, axis=1, prepend=E[:, :1])
     dE[dE < 0] = 0
+    # Normalize to [0, 1]
+    dE_max = np.max(dE) + eps
+    dE = dE / dE_max
 
     # ==============================
     # 5. Phase signal
     # ==============================
     phase_signal = np.maximum(signals, 0)
+    # Normalize to [0, 1]
+    phase_max = np.max(phase_signal) + eps
+    phase_signal = phase_signal / phase_max
 
     # ==============================
     # 6. Normalization
@@ -150,7 +156,7 @@ def auditory_frontend(
         max_val = np.max(np.abs(E)) + eps
         E = E / max_val
 
-    elif normalization == "rms":
+    elif normalization == "rms": #TODO: consider remove this, likely useless in the future
         rms = np.sqrt(np.mean(E**2, axis=1, keepdims=True)) + eps
         E = E / rms
 
