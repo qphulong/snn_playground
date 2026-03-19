@@ -2,6 +2,7 @@ import numpy as np
 from brian2 import *
 import glob
 import os
+import yaml
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -9,16 +10,40 @@ from src.utils.spike_encoding import compute_spike_input_current
 
 import time
 start = time.time()
+
+# ============================================================
+# Load recording config
+# ============================================================
+
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record_config.yaml")
+
+with open(CONFIG_PATH, "r") as f:
+    cfg = yaml.safe_load(f)
+
+MAX_SAMPLES                = cfg.get("max_samples", None)            # None = all files
+RECORD_WEIGHTS_EVOLUTION   = cfg.get("weights_evolution", [])        # list of [i, j] pairs
+RECORD_MEMBRANE_POTENTIAL  = cfg.get("membrane_potential", [])        # list of hidden neuron indices
+RECORD_FINAL_WEIGHTS       = cfg.get("final_weights_matrix", False)
+RECORD_MEAN_RATE_INPUT     = cfg.get("mean_firing_rate_input", False)
+RECORD_MEAN_RATE_HIDDEN    = cfg.get("mean_firing_rate_hidden", False)
+
+# Derived flags
+NEED_IN_SPIKES  = RECORD_MEAN_RATE_INPUT
+NEED_H_SPIKES   = RECORD_MEAN_RATE_HIDDEN or bool(RECORD_WEIGHTS_EVOLUTION)
+NEED_V_MONITOR  = bool(RECORD_MEMBRANE_POTENTIAL)
+NEED_W_SNAPSHOT = bool(RECORD_WEIGHTS_EVOLUTION)
+
+# Input spike monitor always needs full neuron-level detail for per-neuron rates
+
 # ============================================================
 # Find dataset
 # ============================================================
-wav_files = sorted(glob.glob("datasets/vox1_small/**/*.wav", recursive=True))
 
+wav_files = sorted(glob.glob("datasets/vox1_small/**/*.wav", recursive=True))
 print("Total files:", len(wav_files))
 
-MAX_SAMPLES = 1
-wav_files = wav_files[:MAX_SAMPLES]
-
+if MAX_SAMPLES is not None:
+    wav_files = wav_files[:MAX_SAMPLES]
 print("Training on:", len(wav_files))
 
 
@@ -29,39 +54,39 @@ print("Training on:", len(wav_files))
 N_IN = 900   # input layer size: 100 channels × 9 neurons each
 N_H  = 900   # hidden (STDP) layer size
 
-DT_SIM = 1 * ms  # simulation time step
+DT_SIM = 1 * ms
 
 # -- Input layer (adaptive LIF) --
-tau_m       = 40 * ms   # membrane time constant
-tau_a       = 20 * ms   # adaptation time constant
-tau_current = 1 * ms    # unit-conversion factor for input current
-beta        = 0.25      # adaptation increment on spike
-v_th_in     = 1.0       # spike threshold
+tau_m       = 40 * ms
+tau_a       = 20 * ms
+tau_current = 1 * ms
+beta        = 0.25
+v_th_in     = 1.0
 
 # -- Hidden layer (adaptive-threshold LIF) --
-tau_h        = 10 * ms   # membrane time constant
-tau_vth      = 10 * ms   # adaptive threshold decay
-tau_elig     = 20 * ms   # post-synaptic eligibility trace decay
-vth_rest     = 1.0       # resting threshold
-vth_init     = 1.0       # initial threshold (== resting)
-vth_jump     = 0.25      # threshold increment on spike
+tau_h        = 10 * ms
+tau_vth      = 10 * ms
+tau_elig     = 20 * ms
+vth_rest     = 1.0
+vth_init     = 1.0
+vth_jump     = 0.25
 
 # -- STDP --
-taupre      = 20 * ms    # pre-synaptic trace decay
-taupost     = 20 * ms    # post-synaptic trace decay
-Apre_delta  =  0.01      # LTP increment
-Apost_delta = -0.0105    # LTD increment (slightly larger for weight drift control)
+taupre      = 20 * ms
+taupost     = 20 * ms
+Apre_delta  =  0.01
+Apost_delta = -0.0105
 
 # -- Synaptic weight bounds --
 wmax        = 1.0
 wmin        = 0.0
-w_init_mean = 0.3   # initial weight mean (uniform in [wmin, 2*w_init_mean])
+W_INIT_SUM  = 90
 
-# -- Weight normalisation (reference-style: threshold-relative, spike-gated) --
+# -- Homeostatic normalisation --
 NORM_MARGIN = 1.15
 
-# -- Winner-suppress-all (lateral inhibition in hidden layer) --
-lat_inh = 0.5   # inhibitory voltage kick applied to all non-winning hidden neurons
+# -- Lateral inhibition --
+lat_inh = 0.5
 
 
 # ============================================================
@@ -70,14 +95,34 @@ lat_inh = 0.5   # inhibitory voltage kick applied to all non-winning hidden neur
 
 np.random.seed(42)
 
-w_matrix = np.random.uniform(wmin, 2*w_init_mean, size=(N_IN, N_H))
+w_matrix = np.random.uniform(0, 1, size=(N_IN, N_H))
+w_matrix = w_matrix / w_matrix.sum(axis=0, keepdims=True) * W_INIT_SUM
+w_matrix = np.clip(w_matrix, wmin, wmax)
 
-history = {
-    "mean_w": [],
-    "std_w": [],
-    "hidden_spikes": [],
-    "delta_w": []
-}
+# Storage for recorded data
+records = {}
+
+if RECORD_WEIGHTS_EVOLUTION:
+    # Shape: (num_pairs, num_snapshots_total)
+    records["weights_evolution_pairs"] = [list(p) for p in RECORD_WEIGHTS_EVOLUTION]
+    records["weights_evolution_values"] = [[] for _ in RECORD_WEIGHTS_EVOLUTION]
+    records["weights_evolution_times_ms"] = []
+
+if RECORD_MEMBRANE_POTENTIAL:
+    records["membrane_potential_neurons"] = RECORD_MEMBRANE_POTENTIAL
+    records["membrane_potential_v"] = []    # list of arrays, one per sample
+    records["membrane_potential_t"] = []
+
+if RECORD_FINAL_WEIGHTS:
+    records["final_weights_matrix"] = None
+
+if RECORD_MEAN_RATE_INPUT:
+    records["mean_firing_rate_input_counts"] = np.zeros(N_IN, dtype=np.int64)
+    records["mean_firing_rate_input_duration_s"] = 0.0
+
+if RECORD_MEAN_RATE_HIDDEN:
+    records["mean_firing_rate_hidden_counts"] = np.zeros(N_H, dtype=np.int64)
+    records["mean_firing_rate_hidden_duration_s"] = 0.0
 
 
 # ============================================================
@@ -98,6 +143,7 @@ for sample_idx, audio_path in enumerate(wav_files):
         print("Error:", e)
         continue
 
+    duration_s = float(T) * float(DT_SIM)
 
     # ======================================================
     # Brian2 simulation
@@ -109,7 +155,7 @@ for sample_idx, audio_path in enumerate(wav_files):
     I_timed = TimedArray(I.T.astype(float), dt=DT_SIM)
 
     # ------------------------------------------------------
-    # Input encoding neurons
+    # Input neurons
     # ------------------------------------------------------
 
     eqs_in = """
@@ -127,7 +173,7 @@ for sample_idx, audio_path in enumerate(wav_files):
     )
 
     # ------------------------------------------------------
-    # Hidden neurons (adaptive-threshold LIF)
+    # Hidden neurons
     # ------------------------------------------------------
 
     eqs_h = f"""
@@ -146,7 +192,6 @@ for sample_idx, audio_path in enumerate(wav_files):
     )
     G_h.vth         = vth_init
     G_h.eligibility = 0.0
-
 
     # ------------------------------------------------------
     # STDP Synapses
@@ -176,49 +221,68 @@ for sample_idx, audio_path in enumerate(wav_files):
         on_pre=on_pre,
         on_post=on_post
     )
-
     S.connect()
 
     src = np.array(S.i)
     tgt = np.array(S.j)
-
     S.w = w_matrix[src, tgt]
 
     # ------------------------------------------------------
-    # Winner-suppress-all lateral inhibition (hidden layer)
+    # Lateral inhibition
     # ------------------------------------------------------
 
     lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post - lat_inh, 0, inf)')
     lat.connect(condition='i != j')
 
+    # ------------------------------------------------------
+    # Monitors — only instantiate what config requires
+    # ------------------------------------------------------
+
+    in_mon = SpikeMonitor(G_in) if NEED_IN_SPIKES else None
+    h_mon  = SpikeMonitor(G_h)  if NEED_H_SPIKES  else None
+
+    # Always need spike monitor on hidden layer for homeostatic norm
+    if h_mon is None:
+        h_mon = SpikeMonitor(G_h)
+
+    v_mon = None
+    if NEED_V_MONITOR:
+        v_mon = StateMonitor(G_h, "v", record=RECORD_MEMBRANE_POTENTIAL)
 
     # ------------------------------------------------------
-    # Spike monitors (full raster recording)
-    # ------------------------------------------------------
-
-    in_mon = SpikeMonitor(G_in)
-    h_mon  = SpikeMonitor(G_h)
-
-    # ------------------------------------------------------
-    # Weight snapshot via NetworkOperation
+    # Weight snapshot NetworkOperation
     # ------------------------------------------------------
 
     SNAPSHOT_INTERVAL = 500 * ms
-    w_snapshots_list = []
-    w_snapshot_times_list = []
 
-    @network_operation(dt=SNAPSHOT_INTERVAL)
-    def record_weights(t):
-        w_snap = np.zeros((N_IN, N_H), dtype=np.float32)
-        w_snap[src, tgt] = np.array(S.w, dtype=np.float32)
-        w_snapshots_list.append(w_snap.copy())
-        w_snapshot_times_list.append(float(t / ms))
+    if NEED_W_SNAPSHOT:
+        pairs = RECORD_WEIGHTS_EVOLUTION
+        # precompute flat indices into S.w for each pair
+        pair_flat_indices = []
+        for (pi, pj) in pairs:
+            # S.w is indexed by synapse; find the synapse for (pi, pj)
+            mask = (src == pi) & (tgt == pj)
+            idx  = np.where(mask)[0]
+            pair_flat_indices.append(int(idx[0]) if len(idx) > 0 else None)
+
+        snap_times = []
+
+        @network_operation(dt=SNAPSHOT_INTERVAL)
+        def record_weights(t):
+            snap_times.append(float(t / ms))
+            w_arr = np.array(S.w)
+            for k, fidx in enumerate(pair_flat_indices):
+                val = float(w_arr[fidx]) if fidx is not None else float("nan")
+                records["weights_evolution_values"][k].append(val)
+
+    # ------------------------------------------------------
+    # Run
+    # ------------------------------------------------------
 
     run(T * DT_SIM)
 
-
     # ======================================================
-    # Extract updated weights and thresholds
+    # Extract updated weights
     # ======================================================
 
     w_prev = w_matrix.copy()
@@ -226,15 +290,10 @@ for sample_idx, audio_path in enumerate(wav_files):
     w_new = np.zeros((N_IN, N_H))
     w_new[src, tgt] = np.array(S.w)
 
-    vth_final = np.array(G_h.vth)   # per-neuron adaptive threshold after sample
-
+    vth_final = np.array(G_h.vth)
 
     # ======================================================
-    # Homeostatic normalisation (threshold-relative, spike-gated)
-    #
-    # Only normalise hidden neurons that fired at least once.
-    # Each such neuron's total incoming weight is capped at
-    # vth_final[nrn] * NORM_MARGIN, matching the reference script.
+    # Homeostatic normalisation
     # ======================================================
 
     spiked_neurons = np.unique(np.array(h_mon.i))
@@ -248,55 +307,75 @@ for sample_idx, audio_path in enumerate(wav_files):
     w_new    = np.clip(w_new, wmin, wmax)
     w_matrix = w_new
 
-
     # ======================================================
-    # Diagnostics
+    # Accumulate records
     # ======================================================
 
-    delta_w = np.mean(np.abs(w_matrix - w_prev))
+    if NEED_W_SNAPSHOT:
+        # snap_times are per-sample; offset by sample so they stay meaningful
+        records["weights_evolution_times_ms"].extend(snap_times)
 
-    history["mean_w"].append(float(w_matrix.mean()))
-    history["std_w"].append(float(w_matrix.std()))
-    history["hidden_spikes"].append(int(h_mon.num_spikes))
-    history["delta_w"].append(float(delta_w))
+    if NEED_V_MONITOR and v_mon is not None:
+        records["membrane_potential_v"].append(np.array(v_mon.v, dtype=np.float32))
+        records["membrane_potential_t"].append(np.array(v_mon.t / ms, dtype=np.float32))
 
+    if RECORD_MEAN_RATE_INPUT and in_mon is not None:
+        spike_i = np.array(in_mon.i, dtype=np.int32)
+        if len(spike_i) > 0:
+            counts = np.bincount(spike_i, minlength=N_IN)
+            records["mean_firing_rate_input_counts"] += counts
+        records["mean_firing_rate_input_duration_s"] += duration_s
 
-print("\nTraining complete")
-
-print("Final mean weight:", w_matrix.mean())
-print("Final std weight :", w_matrix.std())
-print("Mean hidden spikes/sample:", np.mean(history["hidden_spikes"]))
-
-print(f"Runtime: {time.time() - start:.2f} seconds")
+    if RECORD_MEAN_RATE_HIDDEN:
+        spike_i = np.array(h_mon.i, dtype=np.int32)
+        if len(spike_i) > 0:
+            counts = np.bincount(spike_i, minlength=N_H)
+            records["mean_firing_rate_hidden_counts"] += counts
+        records["mean_firing_rate_hidden_duration_s"] += duration_s
 
 
 # ============================================================
-# Save history for visualization
+# Save records
 # ============================================================
 
 save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history.npz")
 
-np.savez_compressed(
-    save_path,
-    # Spike rasters
-    in_spike_i=np.array(in_mon.i, dtype=np.int32),
-    in_spike_t=np.array(in_mon.t / ms, dtype=np.float32),
-    h_spike_i=np.array(h_mon.i, dtype=np.int32),
-    h_spike_t=np.array(h_mon.t / ms, dtype=np.float32),
-    # Final weight matrix
-    w_final=w_matrix.astype(np.float32),
-    # Weight snapshots over time
-    w_snapshots=np.array(w_snapshots_list, dtype=np.float32),
-    w_snapshot_times_ms=np.array(w_snapshot_times_list, dtype=np.float32),
-    # Metadata
-    T_ms=np.float32(float(T)),
-    N_IN=np.int32(N_IN),
-    N_H=np.int32(N_H),
-    # Scalar diagnostics
-    mean_w=np.array(history["mean_w"], dtype=np.float32),
-    std_w=np.array(history["std_w"], dtype=np.float32),
-    hidden_spikes=np.array(history["hidden_spikes"], dtype=np.int32),
-    delta_w=np.array(history["delta_w"], dtype=np.float32),
-)
+arrays = {}
 
-print(f"History saved to: {save_path}")
+if RECORD_WEIGHTS_EVOLUTION:
+    arrays["we_pairs"]    = np.array(records["weights_evolution_pairs"],  dtype=np.int32)
+    arrays["we_values"]   = np.array(records["weights_evolution_values"], dtype=np.float32)  # (n_pairs, n_snaps)
+    arrays["we_times_ms"] = np.array(records["weights_evolution_times_ms"], dtype=np.float32)
+
+if RECORD_MEMBRANE_POTENTIAL:
+    arrays["vmon_neurons"] = np.array(records["membrane_potential_neurons"], dtype=np.int32)
+    if records["membrane_potential_v"]:
+        # Save all samples; each may have different length T so store as object array
+        v_all = np.empty(len(records["membrane_potential_v"]), dtype=object)
+        t_all = np.empty(len(records["membrane_potential_t"]), dtype=object)
+        for s, (vv, tt) in enumerate(zip(records["membrane_potential_v"], records["membrane_potential_t"])):
+            v_all[s] = vv   # (n_neurons, T_s)
+            t_all[s] = tt   # (T_s,)
+        arrays["vmon_v_all"] = v_all
+        arrays["vmon_t_all"] = t_all
+        arrays["vmon_n_samples"] = np.int32(len(records["membrane_potential_v"]))
+
+if RECORD_FINAL_WEIGHTS:
+    arrays["final_weights_matrix"] = w_matrix.astype(np.float32)
+
+if RECORD_MEAN_RATE_INPUT and records.get("mean_firing_rate_input_counts") is not None:
+    dur = records["mean_firing_rate_input_duration_s"]
+    rates = records["mean_firing_rate_input_counts"] / dur if dur > 0 else np.zeros(N_IN)
+    arrays["mean_firing_rate_input"] = rates.astype(np.float32)  # (N_IN,)
+
+if RECORD_MEAN_RATE_HIDDEN and records.get("mean_firing_rate_hidden_counts") is not None:
+    dur = records["mean_firing_rate_hidden_duration_s"]
+    rates = records["mean_firing_rate_hidden_counts"] / dur if dur > 0 else np.zeros(N_H)
+    arrays["mean_firing_rate_hidden"] = rates.astype(np.float32)  # (N_H,)
+
+np.savez_compressed(save_path, **arrays)
+
+print(f"\nTraining complete")
+print(f"Runtime: {time.time() - start:.2f} seconds")
+print(f"Saved records to: {save_path}")
+print(f"Keys saved: {list(arrays.keys())}")

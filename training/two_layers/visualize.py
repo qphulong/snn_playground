@@ -1,268 +1,202 @@
-#!/usr/bin/env python3
 """
-Visualization script for two_layer.py training history.
+visualize.py
+------------
+Load history.npz (produced by train.py) and save all enabled plots as PNGs
+into training/two_layers/ next to this script.
 
 Usage:
-    python training/two_layers/visualize.py [options]
-
-Examples:
-    # Basic (all defaults)
-    python training/two_layers/visualize.py
-
-    # Custom neuron ranges and weight pairs
-    python training/two_layers/visualize.py \\
-        --in-range 0 200 \\
-        --h-range 0 200 \\
-        --weights 0,1 0,2 1,3 \\
-        --output training/two_layers/plots/
+    python visualize.py                        # looks for history.npz next to this script
+    python visualize.py path/to/history.npz
+    python visualize.py path/to/history.npz path/to/record_config.yaml
 """
 
-import argparse
+import sys
 import os
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-from matplotlib.colors import Normalize
+import matplotlib.gridspec as gridspec
+import yaml
+
+# ── resolve paths ─────────────────────────────────────────────────────────────
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+npz_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(SCRIPT_DIR, "history.npz")
+cfg_path = sys.argv[2] if len(sys.argv) > 2 else os.path.join(SCRIPT_DIR, "record_config.yaml")
+
+if not os.path.exists(npz_path):
+    print(f"ERROR: history file not found: {npz_path}")
+    sys.exit(1)
+
+# ── load config (for visualize_samples) ──────────────────────────────────────
+
+visualize_samples = None   # None = all
+if os.path.exists(cfg_path):
+    with open(cfg_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    visualize_samples = cfg.get("visualize_samples", None)  # list[int] or null
+
+# ── load data ─────────────────────────────────────────────────────────────────
+
+data = np.load(npz_path, allow_pickle=True)
+keys = set(data.files)
+print(f"Loaded: {npz_path}")
+print(f"Keys present: {sorted(keys)}\n")
+
+# ── output directory ──────────────────────────────────────────────────────────
+
+OUT_DIR = os.path.join(SCRIPT_DIR, ".")
+os.makedirs(OUT_DIR, exist_ok=True)
+print(f"Saving PNGs to: {OUT_DIR}\n")
+
+saved = []
 
 
-# ============================================================
-# Helpers
-# ============================================================
-
-def load_history(path):
-    data = np.load(path, allow_pickle=False)
-    return data
-
-
-def compute_spike_rates(spike_i, spike_t, n_neurons, T_ms, bin_ms=50.0):
-    """Return per-spike firing rate (Hz) based on the time bin each spike falls in."""
-    n_bins = max(1, int(np.ceil(T_ms / bin_ms)))
-    bin_idx = np.clip((spike_t / bin_ms).astype(np.int32), 0, n_bins - 1)
-
-    counts = np.zeros((n_neurons, n_bins), dtype=np.float32)
-    np.add.at(counts, (spike_i, bin_idx), 1)
-    rates = counts / (bin_ms / 1000.0)  # Hz
-
-    return rates[spike_i, bin_idx]
-
-
-# ============================================================
-# Plot 1 – Spike raster (input + hidden)
-# ============================================================
-
-def plot_raster(data, in_range, h_range, output_dir):
-    in_i = data["in_spike_i"]
-    in_t = data["in_spike_t"]
-    h_i  = data["h_spike_i"]
-    h_t  = data["h_spike_t"]
-    T_ms = float(data["T_ms"])
-
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-    fig.suptitle("Spike Raster Plot", fontsize=14)
-
-    for ax, spike_i, spike_t, rng, title in [
-        (axes[0], in_i, in_t, in_range, "Input Layer"),
-        (axes[1], h_i,  h_t,  h_range,  "Hidden Layer"),
-    ]:
-        lo, hi = rng
-        mask = (spike_i >= lo) & (spike_i < hi)
-        ax.scatter(spike_t[mask], spike_i[mask], s=0.3, c="black", rasterized=True)
-        ax.set_xlim(0, T_ms)
-        ax.set_ylim(lo, hi)
-        ax.set_ylabel("Neuron index")
-        ax.set_title(f"{title}  (neurons {lo}–{hi-1})")
-
-    axes[1].set_xlabel("Time (ms)")
-    plt.tight_layout()
-
-    out = os.path.join(output_dir, "raster.png")
-    fig.savefig(out, dpi=150)
+def save(fig, name):
+    path = os.path.join(OUT_DIR, name)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved: {out}")
+    saved.append(path)
+    print(f"  Saved: {name}")
 
 
-# ============================================================
-# Plot 2 – Weight matrix heatmap
-# ============================================================
+# ── 1. Weight evolution ───────────────────────────────────────────────────────
 
-def plot_weight_heatmap(data, output_dir):
-    w = data["w_final"]   # (N_IN, N_H)
+if "we_pairs" in keys and "we_values" in keys and "we_times_ms" in keys:
+    pairs    = data["we_pairs"]      # (n_pairs, 2)
+    values   = data["we_values"]     # (n_pairs, n_snaps)
+    times_ms = data["we_times_ms"]   # (n_snaps,)
 
-    fig, ax = plt.subplots(figsize=(8, 7))
-    im = ax.imshow(w, aspect="auto", origin="lower", cmap="viridis",
-                   interpolation="nearest")
-    plt.colorbar(im, ax=ax, label="Weight")
-    ax.set_xlabel("Hidden neuron index")
-    ax.set_ylabel("Input neuron index")
-    ax.set_title("Final Weight Matrix Heatmap")
+    n_pairs = len(pairs)
+    fig, axes = plt.subplots(
+        n_pairs, 1,
+        figsize=(11, 3 * n_pairs),
+        sharex=True,
+        squeeze=False
+    )
+    fig.suptitle("Weight Evolution", fontsize=14, fontweight="bold")
+
+    for k, (pi, pj) in enumerate(pairs):
+        ax = axes[k][0]
+        ax.plot(times_ms, values[k], lw=1.5, color=f"C{k}")
+        ax.set_ylabel(f"w[{pi},{pj}]", fontsize=9)
+        ax.set_ylim(0, 1)
+        ax.grid(True, alpha=0.3)
+        ax.axhline(0, color="k", lw=0.5)
+
+    axes[-1][0].set_xlabel("Time (ms)")
     plt.tight_layout()
-
-    out = os.path.join(output_dir, "weight_heatmap.png")
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"Saved: {out}")
+    save(fig, "weight_evolution.png")
 
 
-# ============================================================
-# Plot 3 – Rate-colored spike raster (input + hidden)
-# ============================================================
+# ── 2. Membrane potential — one PNG per neuron per sample ─────────────────────
 
-def plot_rate_raster(data, in_range, h_range, bin_ms, output_dir):
-    in_i = data["in_spike_i"]
-    in_t = data["in_spike_t"]
-    h_i  = data["h_spike_i"]
-    h_t  = data["h_spike_t"]
-    T_ms = float(data["T_ms"])
-    N_IN = int(data["N_IN"])
-    N_H  = int(data["N_H"])
+if "vmon_v_all" in keys and "vmon_t_all" in keys and "vmon_neurons" in keys:
+    neurons  = data["vmon_neurons"]          # (n_neurons,)
+    v_all    = data["vmon_v_all"]            # object array of (n_neurons, T) per sample
+    t_all    = data["vmon_t_all"]            # object array of (T,) per sample
+    n_samples_total = int(data["vmon_n_samples"])
 
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-    fig.suptitle(f"Rate-Colored Raster  (bin = {bin_ms} ms)", fontsize=14)
+    # Determine which samples to visualize
+    if visualize_samples and len(visualize_samples) > 0:
+        sample_indices = [s for s in visualize_samples if s < n_samples_total]
+    else:
+        sample_indices = list(range(n_samples_total))
 
-    for ax, spike_i, spike_t, n_neurons, rng, title in [
-        (axes[0], in_i, in_t, N_IN, in_range, "Input Layer"),
-        (axes[1], h_i,  h_t,  N_H,  h_range,  "Hidden Layer"),
-    ]:
-        lo, hi = rng
-        mask = (spike_i >= lo) & (spike_i < hi)
-        t_sel = spike_t[mask]
-        i_sel = spike_i[mask]
+    for s in sample_indices:
+        v = v_all[s]   # (n_neurons, T)
+        t = t_all[s]   # (T,)
 
-        if len(t_sel) == 0:
-            ax.set_title(f"{title} — no spikes in range")
-            continue
-
-        rates = compute_spike_rates(i_sel, t_sel, n_neurons, T_ms, bin_ms)
-        cmap = cm.hot_r
-        norm = Normalize(vmin=0, vmax=rates.max() if rates.max() > 0 else 1)
-
-        ax.scatter(t_sel, i_sel, s=0.3, c=rates, cmap=cmap, norm=norm,
-                   rasterized=True)
-        sm = cm.ScalarMappable(cmap=cmap, norm=norm)
-        sm.set_array([])
-        plt.colorbar(sm, ax=ax, label="Firing rate (Hz)")
-
-        ax.set_xlim(0, T_ms)
-        ax.set_ylim(lo, hi)
-        ax.set_ylabel("Neuron index")
-        ax.set_title(f"{title}  (neurons {lo}–{hi-1})")
-
-    axes[1].set_xlabel("Time (ms)")
-    plt.tight_layout()
-
-    out = os.path.join(output_dir, "rate_raster.png")
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"Saved: {out}")
-
-
-# ============================================================
-# Plot 4 – Weight evolution for selected (pre, post) pairs
-# ============================================================
-
-def plot_weight_evolution(data, weight_pairs, output_dir):
-    w_snaps = data["w_snapshots"]          # (n_snaps, N_IN, N_H)
-    times   = data["w_snapshot_times_ms"]  # (n_snaps,)
-
-    if w_snaps.ndim != 3 or w_snaps.shape[0] == 0:
-        print("No weight snapshots available — skipping weight evolution plot.")
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-
-    for pre, post in weight_pairs:
-        values = w_snaps[:, pre, post]
-        ax.plot(times, values, marker="o", markersize=3, label=f"({pre}→{post})")
-
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Weight")
-    ax.set_title("Weight Evolution of Selected Synapses")
-    ax.legend(loc="best", fontsize=8)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-
-    out = os.path.join(output_dir, "weight_evolution.png")
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"Saved: {out}")
-
-
-# ============================================================
-# Main
-# ============================================================
-
-def parse_weight_pairs(raw):
-    """Parse list of 'i,j' strings into list of (int, int) tuples."""
-    pairs = []
-    for s in raw:
-        parts = s.split(",")
-        if len(parts) != 2:
-            raise argparse.ArgumentTypeError(
-                f"Weight pair must be 'i,j', got: {s!r}"
+        for k, nid in enumerate(neurons):
+            fig, ax = plt.subplots(figsize=(11, 3))
+            ax.plot(t, v[k], lw=0.8, color="steelblue")
+            ax.set_title(
+                f"Membrane Potential — Hidden Neuron {nid}  |  Sample {s}",
+                fontsize=12, fontweight="bold"
             )
-        pairs.append((int(parts[0]), int(parts[1])))
-    return pairs
+            ax.set_xlabel("Time (ms)")
+            ax.set_ylabel("v (a.u.)")
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            save(fig, f"membrane_potential_sample{s:03d}_neuron{nid:04d}.png")
 
 
-def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_history = os.path.join(script_dir, "history.npz")
+# ── 3. Final weight matrix ────────────────────────────────────────────────────
 
-    parser = argparse.ArgumentParser(
-        description="Visualize two_layer.py training history."
+if "final_weights_matrix" in keys:
+    W = data["final_weights_matrix"]   # (N_IN, N_H)
+
+    fig = plt.figure(figsize=(13, 5))
+    gs  = gridspec.GridSpec(1, 2, width_ratios=[3, 1], figure=fig)
+    fig.suptitle("Final Weight Matrix", fontsize=14, fontweight="bold")
+
+    ax_heat = fig.add_subplot(gs[0])
+    im = ax_heat.imshow(
+        W,
+        aspect="auto",
+        interpolation="nearest",
+        cmap="viridis",
+        vmin=0,
+        vmax=W.max() if W.max() > 0 else 1,
     )
-    parser.add_argument(
-        "--history", default=default_history,
-        help="Path to history.npz (default: same directory as this script)",
-    )
-    parser.add_argument(
-        "--in-range", nargs=2, type=int, default=[0, 100], metavar=("LO", "HI"),
-        help="Neuron index range [LO, HI) for input raster (default: 0 100)",
-    )
-    parser.add_argument(
-        "--h-range", nargs=2, type=int, default=[0, 100], metavar=("LO", "HI"),
-        help="Neuron index range [LO, HI) for hidden raster (default: 0 100)",
-    )
-    parser.add_argument(
-        "--weights", nargs="+", default=["0,1", "0,2", "1,3"],
-        metavar="I,J",
-        help="Synapse pairs for weight evolution, e.g. 0,1 0,2 1,3",
-    )
-    parser.add_argument(
-        "--bin-ms", type=float, default=50.0,
-        help="Time bin size in ms for rate-colored raster (default: 50)",
-    )
-    parser.add_argument(
-        "--output", default=None,
-        help="Directory to save plots (default: same directory as history.npz)",
-    )
+    ax_heat.set_xlabel("Hidden neuron index")
+    ax_heat.set_ylabel("Input neuron index")
+    plt.colorbar(im, ax=ax_heat, label="Weight")
 
-    args = parser.parse_args()
+    ax_hist = fig.add_subplot(gs[1])
+    w_flat = W.flatten()
+    ax_hist.hist(w_flat[w_flat > 0], bins=60, color="steelblue", edgecolor="none", density=True)
+    ax_hist.set_xlabel("Weight value")
+    ax_hist.set_ylabel("Density")
+    ax_hist.set_title("Distribution\n(non-zero)")
+    ax_hist.grid(True, alpha=0.3)
 
-    if not os.path.isfile(args.history):
-        print(f"Error: history file not found: {args.history}")
-        return
-
-    output_dir = args.output or os.path.dirname(os.path.abspath(args.history))
-    os.makedirs(output_dir, exist_ok=True)
-
-    weight_pairs = parse_weight_pairs(args.weights)
-
-    print(f"Loading: {args.history}")
-    data = load_history(args.history)
-
-    in_range = tuple(args.in_range)
-    h_range  = tuple(args.h_range)
-
-    plot_raster(data, in_range, h_range, output_dir)
-    plot_weight_heatmap(data, output_dir)
-    plot_rate_raster(data, in_range, h_range, args.bin_ms, output_dir)
-    plot_weight_evolution(data, weight_pairs, output_dir)
-
-    print("Done.")
+    plt.tight_layout()
+    save(fig, "final_weight_matrix.png")
 
 
-if __name__ == "__main__":
-    main()
+# ── 4. Mean firing rate — input layer (per neuron) ───────────────────────────
+
+if "mean_firing_rate_input" in keys:
+    rates   = data["mean_firing_rate_input"]   # (N_IN,)
+    n_in    = len(rates)
+    indices = np.arange(n_in)
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.bar(indices, rates, width=1.0, color="darkorange", linewidth=0)
+    ax.set_title("Mean Firing Rate — Input Layer", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Neuron index")
+    ax.set_ylabel("Mean rate (Hz)")
+    ax.set_xlim(-0.5, n_in - 0.5)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    save(fig, "mean_firing_rate_input.png")
+
+
+# ── 5. Mean firing rate — hidden layer (per neuron) ──────────────────────────
+
+if "mean_firing_rate_hidden" in keys:
+    rates  = data["mean_firing_rate_hidden"]   # (N_H,)
+    n_h    = len(rates)
+    indices = np.arange(n_h)
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.bar(indices, rates, width=1.0, color="mediumseagreen", linewidth=0)
+    ax.set_title("Mean Firing Rate — Hidden Layer", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Neuron index")
+    ax.set_ylabel("Mean rate (Hz)")
+    ax.set_xlim(-0.5, n_h - 0.5)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    save(fig, "mean_firing_rate_hidden.png")
+
+
+# ── finish ────────────────────────────────────────────────────────────────────
+
+print(f"\n{len(saved)} PNG(s) saved to: {OUT_DIR}")
+if not saved:
+    print("No recognised keys found — nothing was plotted.")
+    print("Expected keys: we_pairs/we_values/we_times_ms, vmon_v_all/vmon_t_all/vmon_neurons,")
+    print("  final_weights_matrix, mean_firing_rate_input, mean_firing_rate_hidden")

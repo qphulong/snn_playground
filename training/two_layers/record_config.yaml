@@ -1,0 +1,40 @@
+# ============================================================
+# Recording configuration for SNN training
+# ============================================================
+
+# How many audio files to train on (null = all files)
+max_samples: 1
+
+# ============================================================
+# Recording options
+# ============================================================
+
+# Weight evolution: list of [input_index, hidden_index] pairs to track over time.
+# Each pair records the weight of that specific synapse at every snapshot interval,
+# across all training samples.
+weights_evolution:
+  - [0, 0]
+  - [0, 1]
+  - [42, 7]
+  - [100, 50]
+
+# Membrane potential: list of hidden neuron indices to record voltage traces for.
+# One trace is saved per sample per neuron.
+membrane_potential: [0, 1, 2, 3]
+
+# Save the full N_IN x N_H weight matrix at the end of training.
+final_weights_matrix: true
+
+# Per-neuron mean firing rate over the full run duration.
+# x-axis = neuron index, y-axis = Hz.
+mean_firing_rate_input: true
+mean_firing_rate_hidden: true
+
+# ============================================================
+# Visualization options
+# ============================================================
+
+# Which sample indices to visualize (0-based).
+# Applies to: membrane_potential plots.
+# null or empty list = visualize all recorded samples.
+visualize_samples: [0]
