@@ -73,8 +73,8 @@ print("Training on:", len(wav_files))
 # Network Hyperparameters
 # ============================================================
 
-N_IN = 900
-N_H  = 900
+N_IN = 700
+N_H  = 700
 
 DT_SIM = 1 * ms
 
@@ -102,13 +102,13 @@ Apost_delta = -0.0105
 # -- Synaptic weight bounds --
 wmax       = 1.0
 wmin       = 0.0
-W_INIT_SUM = 90
+W_INIT_SUM = 20
 
 # -- Homeostatic normalisation --
 NORM_MARGIN = 1.15
 
 # -- Lateral inhibition --
-lat_inh = 0.5
+lat_inh = 1
 
 
 # ============================================================
@@ -168,7 +168,15 @@ for sample_idx, audio_path in enumerate(wav_files):
     print(f"[{sample_idx}/{len(wav_files)}] {os.path.relpath(audio_path)}")
 
     try:
-        I, T = compute_spike_input_current(audio_path, scale=1)
+        I, T = compute_spike_input_current(
+            audio_path, 
+            scale=1,
+            sustained_per_band=4,
+            onset_per_band=2,
+            phase_per_band=1,
+            sust_spread_min=0.7,
+            sust_spread_max=1.3
+            )
     except Exception as e:
         print("Error:", e)
         continue
