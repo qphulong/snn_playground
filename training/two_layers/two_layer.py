@@ -1,5 +1,8 @@
 import numpy as np
 from brian2 import *
+from brian2 import device
+import brian2
+set_device('cpp_standalone', directory='brian2_build', clean=False)
 import glob
 import os
 import yaml
@@ -185,6 +188,8 @@ for sample_idx, audio_path in enumerate(wav_files):
 
     # ── Brian2 setup ───────────────────────────────────────────────────────────
 
+    device.reinit()
+    device.activate(directory=f'brian2_build/sample_{sample_idx}', clean=True)
     start_scope()
     defaultclock.dt = DT_SIM
 
@@ -230,8 +235,9 @@ for sample_idx, audio_path in enumerate(wav_files):
 
     S = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
     S.connect()
-    src = np.array(S.i)
-    tgt = np.array(S.j)
+    # In cpp_standalone, cannot access S.i/S.j before build. Reconstruct for all-to-all:
+    src = np.repeat(np.arange(N_IN), N_H)
+    tgt = np.tile(np.arange(N_H), N_IN)
     S.w = w_matrix[src, tgt]
 
     # Lateral inhibition
@@ -257,26 +263,21 @@ for sample_idx, audio_path in enumerate(wav_files):
     SNAPSHOT_INTERVAL = 500 * ms
 
     if NEED_W_SNAPSHOT:
-        we_pairs = RECORD_WEIGHTS_EVOLUTION
         pair_flat_idx = []
-        for (pi, pj) in we_pairs:
+        for (pi, pj) in RECORD_WEIGHTS_EVOLUTION:
             mask = (src == pi) & (tgt == pj)
             idx  = np.where(mask)[0]
             pair_flat_idx.append(int(idx[0]) if len(idx) > 0 else None)
 
-        snap_times = []
-
-        @network_operation(dt=SNAPSHOT_INTERVAL)
-        def record_weights(t):
-            snap_times.append(float(t / ms))
-            w_arr = np.array(S.w)
-            for k, fidx in enumerate(pair_flat_idx):
-                val = float(w_arr[fidx]) if fidx is not None else float("nan")
-                records["we_values"][k].append(val)
+        valid_flat_idx = [i for i in pair_flat_idx if i is not None]
+        w_snap_mon = StateMonitor(S, 'w', record=valid_flat_idx, dt=SNAPSHOT_INTERVAL)
+    else:
+        w_snap_mon = None
 
     # ── Run ────────────────────────────────────────────────────────────────────
 
     run(T * DT_SIM)
+    device.build(run=True, compile=True, directory=f'brian2_build/sample_{sample_idx}')
 
     # ── Extract weights ────────────────────────────────────────────────────────
 
@@ -297,8 +298,15 @@ for sample_idx, audio_path in enumerate(wav_files):
 
     # ── Accumulate records ─────────────────────────────────────────────────────
 
-    if NEED_W_SNAPSHOT:
-        records["we_times_ms"].extend(snap_times)
+    if NEED_W_SNAPSHOT and w_snap_mon is not None:
+        snap_times = np.array(w_snap_mon.t / ms, dtype=np.float32)
+        records["we_times_ms"].extend(snap_times.tolist())
+        for k, fidx in enumerate(pair_flat_idx):
+            if fidx is not None:
+                mon_idx = valid_flat_idx.index(fidx)
+                records["we_values"][k].extend(w_snap_mon.w[mon_idx].tolist())
+            else:
+                records["we_values"][k].extend([float("nan")] * len(snap_times))
 
     if NEED_IN_V_MON and in_v_mon is not None:
         records["vmon_in_v"].append(np.array(in_v_mon.v,  dtype=np.float32))
