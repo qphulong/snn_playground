@@ -86,23 +86,23 @@ beta        = 0.25
 v_th_in     = 1.0
 
 # -- Hidden layer (adaptive-threshold LIF) --
-tau_h        = 25 * ms
-tau_vth      = 50 * ms
+tau_h        = 50 * ms
+tau_vth      = 100 * ms
 tau_elig     = 20 * ms
-vth_rest     = 0.05
-vth_init     = 0.05
-vth_jump     = 2
+vth_rest     = 0.8
+vth_init     = 0.8
+vth_jump     = 1
 
 # -- STDP --
 taupre      = 20 * ms
 taupost     = 20 * ms
-Apre_delta  =  0.01
-Apost_delta = -0.0105
+Apre_delta  =  0.005
+Apost_delta = -0.0055
 
 # -- Synaptic weight bounds --
 wmax       = 1.0
 wmin       = 0.0
-W_INIT_SUM = 7
+W_INIT_SUM = 14
 
 # -- Homeostatic normalisation --
 NORM_MARGIN = 1.15
@@ -115,8 +115,35 @@ lat_inh = 1
 # Initialize weights
 # ============================================================
 
-w_matrix = np.random.uniform(0, 1, size=(N_IN, N_H))
+# w_matrix = np.random.uniform(0, 1, size=(N_IN, N_H))
+# w_matrix = w_matrix / w_matrix.sum(axis=0, keepdims=True) * W_INIT_SUM
+# w_matrix = np.clip(w_matrix, wmin, wmax)
+
+# Hyperparameters
+sigma = N_IN / 5     # width of the bell curve (tune this)
+noise_std = 0.005      # small symmetry breaking noise
+
+# Indices
+i = np.arange(N_IN).reshape(-1, 1)   # input index
+j = np.arange(N_H).reshape(1, -1)    # hidden index
+
+# Circular distance (THIS is the key part)
+dist = np.abs(i - j)
+dist = np.minimum(dist, N_IN - dist)
+
+# Gaussian centered at j for each column
+w_matrix = np.exp(-(dist ** 2) / (2 * sigma ** 2))
+
+# Optional: tiny noise to avoid identical neurons
+w_matrix += np.random.normal(0, noise_std, size=w_matrix.shape)
+
+# Remove negatives from noise
+w_matrix = np.clip(w_matrix, 0, None)
+
+# Normalize each column to W_INIT_SUM
 w_matrix = w_matrix / w_matrix.sum(axis=0, keepdims=True) * W_INIT_SUM
+
+# Clip to bounds
 w_matrix = np.clip(w_matrix, wmin, wmax)
 
 # ── Record storage ─────────────────────────────────────────────────────────────
@@ -244,7 +271,7 @@ for sample_idx, audio_path in enumerate(wav_files):
     S.w = w_matrix[src, tgt]
 
     # Lateral inhibition
-    lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post - lat_inh, 0, inf)')
+    lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0.8, 0, inf)')
     lat.connect(condition='i != j')
 
     # ── Monitors ───────────────────────────────────────────────────────────────
@@ -296,7 +323,7 @@ for sample_idx, audio_path in enumerate(wav_files):
     spiked_neurons = np.unique(np.array(hid_spike_mon.i))
     for nrn in spiked_neurons:
         # limit = vth_final[nrn] * NORM_MARGIN
-        limit = 7 #TODO: reconsider this
+        limit = 14 #TODO: reconsider this
         wsum  = w_new[:, nrn].sum()
         if wsum > limit > 0:
             w_new[:, nrn] *= limit / wsum

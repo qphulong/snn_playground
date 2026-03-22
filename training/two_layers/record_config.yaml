@@ -3,7 +3,7 @@
 # ============================================================
 
 # How many audio files to train on (null = all files)
-max_samples: 1
+max_samples: 300
 
 # ============================================================
 # Recording options
@@ -21,18 +21,23 @@ weights_evolution:
 #   - a plain index:                0            → plot full duration
 #   - index + time window:  [0, [100, 200]]      → neuron 0 from 100ms to 200ms
 membrane_potential_input:
-  - 0
-  - [1, [100, 500]]
+  - 100
+  - 200
+  - 300
+  - 400
+  - 500
+  - 600
+  - 699
 
 # Membrane potential for hidden neurons (same syntax as above).
 membrane_potential_hidden:
-  - 0
-  - 1
-  - [2, [0, 300]]
-  - [400, [500,600]]
-  - [401, [500,600]]
-  - [402, [500,600]]
-  - [403, [500,600]]
+  - [100,[500,1000]]
+  - [200,[500,1000]]
+  - [300,[500,1000]]
+  - [400,[500,1000]]
+  - [500,[500,1000]]
+  - [600,[500,1000]]
+  - [699,[500,1000]]
 
 # Spike raster plot for input layer (all neurons, per sample).
 spike_raster_input: true
@@ -54,4 +59,4 @@ mean_firing_rate_hidden: true
 # Which sample indices to visualize (0-based).
 # Applies to: membrane_potential and spike_raster plots.
 # null or empty list = visualize all recorded samples.
-visualize_samples: [0]
+visualize_samples: [100,200,280]

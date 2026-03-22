@@ -86,20 +86,33 @@ def _window_mask(t, t_start, t_end):
 # 1. Weight evolution
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ── 1a. Whole-dataset: x = sample index ──────────────────────────────────────
 if "we_pairs" in keys and "we_values" in keys and "we_times_ms" in keys:
-    pairs    = data["we_pairs"]      # (n_pairs, 2)
-    values   = data["we_values"]     # (n_pairs, n_total_snaps)
-    times_ms = data["we_times_ms"]   # (n_total_snaps,)
+    pairs    = data["we_pairs"]             # (n_pairs, 2)
+    values   = data["we_values"]            # (n_pairs, n_total_snaps)
+    times_ms = data["we_times_ms"]          # (n_total_snaps,)
 
-    # ── 1a. Whole-dataset: one plot per synapse pair across all samples ────────
+    # Convert cumulative ms → sample index using boundary timestamps
+    if "we_sample_boundaries_ms" in keys:
+        boundaries = data["we_sample_boundaries_ms"]   # (n_samples+1,) or (n_samples,)
+        # For each snapshot time, find which sample it belongs to
+        sample_idx = np.searchsorted(boundaries, times_ms, side="right") - 1
+        sample_idx = np.clip(sample_idx, 0, len(boundaries) - 1)
+        x_axis     = sample_idx
+        x_label    = "Sample index"
+    else:
+        # Fallback: just use snapshot number
+        x_axis  = np.arange(values.shape[1])
+        x_label = "Snapshot index"
+
     for k, (pi, pj) in enumerate(pairs):
         fig, ax = plt.subplots(figsize=(11, 3))
-        ax.plot(times_ms, values[k], lw=1.5, color=f"C{k % 10}")
+        ax.plot(x_axis, values[k], lw=1.5, color=f"C{k % 10}")
         ax.set_title(
             f"Weight Evolution (all samples) — synapse in[{pi}] → hid[{pj}]",
             fontsize=12, fontweight="bold"
         )
-        ax.set_xlabel("Cumulative time (ms)")
+        ax.set_xlabel(x_label)
         ax.set_ylabel("Weight")
         ax.set_ylim(0, 1)
         ax.grid(True, alpha=0.3)
