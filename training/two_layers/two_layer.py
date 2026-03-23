@@ -268,6 +268,7 @@ for epoch_idx in range(EPOCHS):
     print(f"{'='*60}")
 
     epoch_records = {}
+    sample_start_times_ms = []  # Track absolute time at start of each sample
 
     if RECORD_WEIGHTS_EVOLUTION:
         epoch_records["we_pairs"]          = [list(p) for p in RECORD_WEIGHTS_EVOLUTION]
@@ -334,6 +335,10 @@ for epoch_idx in range(EPOCHS):
         # ── Reset states & reload weights ──────────────────────────────────────
         _reset_network_states()
         S.w = w_matrix[src, tgt]
+
+        # Record absolute time at start of this sample (in ms)
+        sample_start_ms = float(defaultclock.t / ms)
+        sample_start_times_ms.append(sample_start_ms)
 
         # New TimedArray for this sample's input current
         I_timed_sample = TimedArray(I.T.astype(float), dt=DT_SIM)
@@ -456,6 +461,11 @@ for epoch_idx in range(EPOCHS):
         for i, a in enumerate(list_of_arrays):
             out[i] = a
         return out
+
+    # Save sample start times and use for weight evolution boundaries
+    epoch_arrays["sample_start_times_ms"] = np.array(sample_start_times_ms, dtype=np.float64)
+    if RECORD_WEIGHTS_EVOLUTION:
+        epoch_arrays["we_sample_boundaries_ms"] = np.array(sample_start_times_ms, dtype=np.float64)
 
     if RECORD_WEIGHTS_EVOLUTION:
         epoch_arrays["we_pairs"]          = np.array(epoch_records["we_pairs"],    dtype=np.int32)

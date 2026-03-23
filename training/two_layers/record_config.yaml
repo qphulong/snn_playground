@@ -1,66 +1,66 @@
-# ============================================================
-# Recording configuration for SNN training
-# ============================================================
+  # ============================================================
+  # Recording configuration for SNN training
+  # ============================================================
 
-# Number of training epochs
-epochs: 3
+  # Number of training epochs
+  epochs: 1
 
-# ============================================================
-# Recording options
-# ============================================================
+  # ============================================================
+  # Recording options
+  # ============================================================
 
-# Weight evolution: list of [input_index, hidden_index] pairs to track over time.
-weights_evolution:
-  - [460, 453]
-  - [ 87, 57 ]
+  # Weight evolution: list of [input_index, hidden_index] pairs to track over time.
+  weights_evolution:
+    - [149, 212]
+    - [ 87, 57 ]
 
-# Membrane potential for input neurons.
-# Each entry is either:
-#   - a plain index:                0            → plot full duration
-#   - index + time window:  [0, [100, 200]]      → neuron 0 from 100ms to 200ms
-membrane_potential_input:
-  - 100
-  - 200
-  - 300
-  - 400
-  - 500
-  - 600
-  - 699
+  # Membrane potential for input neurons.
+  # Each entry is either:
+  #   - a plain index:                0            → plot full duration
+  #   - index + time window:  [0, [100, 200]]      → neuron 0 from 100ms to 200ms
+  membrane_potential_input:
+    - 100
+    - 200
+    - 300
+    - 400
+    - 500
+    - 600
+    - 699
 
-# Membrane potential for hidden neurons (same syntax as above).
-membrane_potential_hidden:
-  - [100,[500,1000]]
-  - [200,[500,1000]]
-  - [300,[500,1000]]
-  - [400,[500,1000]]
-  - [500,[500,1000]]
-  - [600,[500,1000]]
-  - [699,[500,1000]]
+  # Membrane potential for hidden neurons (same syntax as above).
+  membrane_potential_hidden:
+    - [100,[500,1000]]
+    - [200,[500,1000]]
+    - [300,[500,1000]]
+    - [400,[500,1000]]
+    - [500,[500,1000]]
+    - [600,[500,1000]]
+    - [699,[500,1000]]
 
-# Spike raster plot for input layer (all neurons, per sample).
-spike_raster_input: true
+  # Spike raster plot for input layer (all neurons, per sample).
+  spike_raster_input: true
 
-# Spike raster plot for hidden layer (all neurons, per sample).
-spike_raster_hidden: true
+  # Spike raster plot for hidden layer (all neurons, per sample).
+  spike_raster_hidden: true
 
-# Save the full N_IN x N_H weight matrix at the end of training.
-final_weights_matrix: true
+  # Save the full N_IN x N_H weight matrix at the end of training.
+  final_weights_matrix: true
 
-# Per-neuron mean firing rate (x = neuron index, y = Hz).
-mean_firing_rate_input: true
-mean_firing_rate_hidden: true
+  # Per-neuron mean firing rate (x = neuron index, y = Hz).
+  mean_firing_rate_input: true
+  mean_firing_rate_hidden: true
 
-# ============================================================
-# Visualization options
-# ============================================================
+  # ============================================================
+  # Visualization options
+  # ============================================================
 
-# Top-k weights to visualize after training
-top_k_weights_viz: 10
+  # Top-k weights to visualize after training
+  top_k_weights_viz: 10
 
-# Which epochs to visualize samples from (empty = all epochs)
-visualize_epoch: [2]
+  # Which epochs to visualize samples from (empty = all epochs)
+  visualize_epoch: [0]
 
-# Which sample indices to visualize (0-based, within selected epochs).
-# Applies to: membrane_potential and spike_raster plots.
-# null or empty list = visualize all recorded samples.
-visualize_samples: [299]
+  # Which sample indices to visualize (0-based, within selected epochs).
+  # Applies to: membrane_potential and spike_raster plots.
+  # null or empty list = visualize all recorded samples.
+  visualize_samples: [10,20,30,39]
