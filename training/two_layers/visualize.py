@@ -119,15 +119,6 @@ for epoch_idx, npz_path in enumerate(epoch_files):
     data = np.load(npz_path, allow_pickle=True)
     keys = set(data.files)
 
-    # ── Load sample start times (absolute Brian2 time in ms) ──────────────────────
-    sample_start_times_ms = data["sample_start_times_ms"] if "sample_start_times_ms" in keys else None
-
-    def _get_sample_start(s):
-        """Return absolute Brian2 time (in ms) at start of sample s, or 0.0 if not available."""
-        if sample_start_times_ms is not None and s < len(sample_start_times_ms):
-            return float(sample_start_times_ms[s])
-        return 0.0
-
     # ══════════════════════════════════════════════════════════════════════════════
     # 1. Weight evolution
     # ══════════════════════════════════════════════════════════════════════════════
@@ -211,16 +202,11 @@ for epoch_idx, npz_path in enumerate(epoch_files):
         for s in _sample_indices(n_total):
             v = v_all[s]
             t = t_all[s]
-            sample_start = _get_sample_start(s)
 
             for k, nid in enumerate(neurons):
-                t_start_rel, t_end_rel = win_lookup.get(int(nid), (-1.0, -1.0))
-                # Convert relative config window to absolute Brian2 time
-                abs_t_start = sample_start + t_start_rel if t_start_rel >= 0 else -1.0
-                abs_t_end   = sample_start + t_end_rel   if t_end_rel   >= 0 else -1.0
-                mask = _window_mask(t, abs_t_start, abs_t_end)
-                # Display times relative to sample start
-                t_w  = t[mask] - sample_start
+                t_start, t_end = win_lookup.get(int(nid), (-1.0, -1.0))
+                mask = _window_mask(t, t_start, t_end)
+                t_w  = t[mask]
                 v_w  = v[k][mask]
 
                 spike_times = t_w[np.where((v_w[:-1] < v_th_in) & (v_w[1:] >= v_th_in))[0] + 1] \
@@ -234,7 +220,7 @@ for epoch_idx, npz_path in enumerate(epoch_files):
                     ax.vlines(spike_times, ymin=v_th_in, ymax=v_th_in * 1.25,
                               color="crimson", lw=1.0, zorder=4, label=f"spikes ({len(spike_times)})")
 
-                win_str = f"  [{t_start_rel:.0f}–{t_end_rel:.0f} ms]" if t_start_rel >= 0 else ""
+                win_str = f"  [{t_start:.0f}–{t_end:.0f} ms]" if t_start >= 0 else ""
                 ax.set_title(f"Membrane Potential — Input Neuron {nid}  |  Epoch {epoch_idx}, Sample {s}{win_str}",
                              fontsize=11, fontweight="bold")
                 ax.set_xlabel("Time (ms)")
@@ -266,16 +252,11 @@ for epoch_idx, npz_path in enumerate(epoch_files):
             v   = v_all[s]
             vth = vth_all[s]
             t   = t_all[s]
-            sample_start = _get_sample_start(s)
 
             for k, nid in enumerate(neurons):
-                t_start_rel, t_end_rel = win_lookup.get(int(nid), (-1.0, -1.0))
-                # Convert relative config window to absolute Brian2 time
-                abs_t_start = sample_start + t_start_rel if t_start_rel >= 0 else -1.0
-                abs_t_end   = sample_start + t_end_rel   if t_end_rel   >= 0 else -1.0
-                mask  = _window_mask(t, abs_t_start, abs_t_end)
-                # Display times relative to sample start
-                t_w   = t[mask] - sample_start
+                t_start, t_end = win_lookup.get(int(nid), (-1.0, -1.0))
+                mask  = _window_mask(t, t_start, t_end)
+                t_w   = t[mask]
                 v_w   = v[k][mask]
                 vth_w = vth[k][mask]
 
@@ -291,7 +272,7 @@ for epoch_idx, npz_path in enumerate(epoch_files):
                     ax.vlines(spike_times, ymin=spike_vth, ymax=spike_vth * 1.25,
                               color="crimson", lw=1.0, zorder=4, label=f"spikes ({len(spike_times)})")
 
-                win_str = f"  [{t_start_rel:.0f}–{t_end_rel:.0f} ms]" if t_start_rel >= 0 else ""
+                win_str = f"  [{t_start:.0f}–{t_end:.0f} ms]" if t_start >= 0 else ""
                 ax.set_title(f"Membrane Potential — Hidden Neuron {nid}  |  Epoch {epoch_idx}, Sample {s}{win_str}",
                              fontsize=11, fontweight="bold")
                 ax.set_xlabel("Time (ms)")
@@ -318,13 +299,10 @@ for epoch_idx, npz_path in enumerate(epoch_files):
         for s in _sample_indices(n_total):
             sp_i = raster_i[s]
             sp_t = raster_t[s]
-            sample_start = _get_sample_start(s)
 
             fig, ax = plt.subplots(figsize=(12, 5))
             if len(sp_t) > 0:
-                # Display spike times relative to sample start
-                sp_t_rel = sp_t - sample_start
-                ax.scatter(sp_t_rel, sp_i, s=0.5, c="steelblue", linewidths=0, rasterized=True)
+                ax.scatter(sp_t, sp_i, s=0.5, c="steelblue", linewidths=0, rasterized=True)
             ax.set_title(f"Spike Raster — Input Layer  |  Epoch {epoch_idx}, Sample {s}  "
                          f"({len(sp_t):,} spikes)", fontsize=12, fontweight="bold")
             ax.set_xlabel("Time (ms)")
@@ -349,13 +327,10 @@ for epoch_idx, npz_path in enumerate(epoch_files):
         for s in _sample_indices(n_total):
             sp_i = raster_i[s]
             sp_t = raster_t[s]
-            sample_start = _get_sample_start(s)
 
             fig, ax = plt.subplots(figsize=(12, 5))
             if len(sp_t) > 0:
-                # Display spike times relative to sample start
-                sp_t_rel = sp_t - sample_start
-                ax.scatter(sp_t_rel, sp_i, s=0.5, c="mediumseagreen", linewidths=0, rasterized=True)
+                ax.scatter(sp_t, sp_i, s=0.5, c="mediumseagreen", linewidths=0, rasterized=True)
             ax.set_title(f"Spike Raster — Hidden Layer  |  Epoch {epoch_idx}, Sample {s}  "
                          f"({len(sp_t):,} spikes)", fontsize=12, fontweight="bold")
             ax.set_xlabel("Time (ms)")
@@ -500,16 +475,16 @@ for epoch_idx, npz_path in enumerate(epoch_files):
                 epoch_dir=epoch_dir
             )
             
-# ══════════════════════════════════════════════════════════════════════════════
-# 0. Initial weight matrix
-# ══════════════════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════════════════
+    # Initial weight matrix
+    # ══════════════════════════════════════════════════════════════════════════════
 
-if os.path.exists(init_file):
-    print("Visualizing initial weight matrix...")
-    init_data = np.load(init_file, allow_pickle=True)
-    if "init_weight_matrix" in init_data.files:
-        W_init = init_data["init_weight_matrix"]
-        _plot_weight_matrix(W_init, "Initial Weight Matrix", "init_weight_matrix.png", epoch_dir="epoch_init")
+    if os.path.exists(init_file):
+        print("Visualizing initial weight matrix...")
+        init_data = np.load(init_file, allow_pickle=True)
+        if "init_weight_matrix" in init_data.files:
+            W_init = init_data["init_weight_matrix"]
+            _plot_weight_matrix(W_init, "Initial Weight Matrix", "init_weight_matrix.png", epoch_dir="epoch_init")
 
 
 # ── finish ────────────────────────────────────────────────────────────────────
