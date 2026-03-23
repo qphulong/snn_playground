@@ -2,8 +2,8 @@
 # Recording configuration for SNN training
 # ============================================================
 
-# How many audio files to train on (null = all files)
-max_samples: 300
+# Number of training epochs
+epochs: 3
 
 # ============================================================
 # Recording options
@@ -11,10 +11,8 @@ max_samples: 300
 
 # Weight evolution: list of [input_index, hidden_index] pairs to track over time.
 weights_evolution:
-  - [0, 0]
-  - [0, 1]
-  - [42, 7]
-  - [100, 50]
+  - [460, 453]
+  - [ 87, 57 ]
 
 # Membrane potential for input neurons.
 # Each entry is either:
@@ -56,7 +54,13 @@ mean_firing_rate_hidden: true
 # Visualization options
 # ============================================================
 
-# Which sample indices to visualize (0-based).
+# Top-k weights to visualize after training
+top_k_weights_viz: 10
+
+# Which epochs to visualize samples from (empty = all epochs)
+visualize_epoch: [2]
+
+# Which sample indices to visualize (0-based, within selected epochs).
 # Applies to: membrane_potential and spike_raster plots.
 # null or empty list = visualize all recorded samples.
-visualize_samples: [100,200,280]
+visualize_samples: [299]
