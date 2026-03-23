@@ -102,10 +102,6 @@ wmin       = 0.0
 W_INIT_SUM = 4
 
 # -- Weight initialization --
-# (old uniform init:)
-# w_matrix = np.random.uniform(0, 1, size=(N_IN, N_H))
-# w_matrix = w_matrix / w_matrix.sum(axis=0, keepdims=True) * W_INIT_SUM
-# w_matrix = np.clip(w_matrix, wmin, wmax)
 W_INIT_SIGMA     = N_IN / 5   # Gaussian bell width
 W_INIT_NOISE_STD = 0.005      # symmetry-breaking noise
 
@@ -120,21 +116,15 @@ lat_inh = 1
 # Initialize weights
 # ============================================================
 
-i = np.arange(N_IN).reshape(-1, 1)   # input index
-j = np.arange(N_H).reshape(1, -1)    # hidden index
+_i = np.arange(N_IN).reshape(-1, 1)
+_j = np.arange(N_H).reshape(1, -1)
 
-# Circular distance (key: enables toroidal topology)
-dist = np.abs(i - j)
+dist = np.abs(_i - _j)
 dist = np.minimum(dist, N_IN - dist)
 
-# Gaussian centered at j for each column
 w_matrix = np.exp(-(dist ** 2) / (2 * W_INIT_SIGMA ** 2))
-
-# Add small symmetry-breaking noise
 w_matrix += np.random.normal(0, W_INIT_NOISE_STD, size=w_matrix.shape)
 w_matrix = np.clip(w_matrix, 0, None)
-
-# Normalize each column to W_INIT_SUM
 w_matrix = w_matrix / w_matrix.sum(axis=0, keepdims=True) * W_INIT_SUM
 w_matrix = np.clip(w_matrix, wmin, wmax)
 
@@ -143,11 +133,10 @@ records = {}
 
 if RECORD_WEIGHTS_EVOLUTION:
     records["we_pairs"]          = [list(p) for p in RECORD_WEIGHTS_EVOLUTION]
-    records["we_values"]         = [[] for _ in RECORD_WEIGHTS_EVOLUTION]  # global timeline
+    records["we_values"]         = [[] for _ in RECORD_WEIGHTS_EVOLUTION]
     records["we_times_ms"]       = []
-    # Per-sample: list[sample] of (n_pairs, n_snaps_this_sample) and times
-    records["we_sample_values"]  = []   # list[sample] of array (n_pairs, n_snaps)
-    records["we_sample_times"]   = []   # list[sample] of array (n_snaps,)
+    records["we_sample_values"]  = []
+    records["we_sample_times"]   = []
 
 if NEED_IN_V_MON:
     records["vmon_in_indices"]  = VMON_IN_INDICES
@@ -171,28 +160,102 @@ if RECORD_SPIKE_RASTER_HIDDEN:
     records["raster_hid_t"] = []
 
 if RECORD_MEAN_RATE_INPUT:
-    records["mfr_in_counts"]        = np.zeros(N_IN, dtype=np.int64)  # global
+    records["mfr_in_counts"]        = np.zeros(N_IN, dtype=np.int64)
     records["mfr_in_dur_s"]         = 0.0
-    records["mfr_in_sample_counts"] = []   # list[sample] of (N_IN,) int arrays
-    records["mfr_in_sample_dur_s"]  = []   # list[sample] of float
+    records["mfr_in_sample_counts"] = []
+    records["mfr_in_sample_dur_s"]  = []
 
 if RECORD_MEAN_RATE_HIDDEN:
-    records["mfr_hid_counts"]        = np.zeros(N_H,  dtype=np.int64)  # global
+    records["mfr_hid_counts"]        = np.zeros(N_H,  dtype=np.int64)
     records["mfr_hid_dur_s"]         = 0.0
     records["mfr_hid_sample_counts"] = []
     records["mfr_hid_sample_dur_s"]  = []
 
-# Per-sample weight matrix snapshots (taken at end of each sample, after normalisation)
 if RECORD_FINAL_WEIGHTS:
-    records["weight_matrix_per_sample"] = []   # list[sample] of (N_IN, N_H) float32
-
-
-# ============================================================
-# Init weight matrix recording
-# ============================================================
-
-if RECORD_FINAL_WEIGHTS:
+    records["weight_matrix_per_sample"] = []
     records["init_weight_matrix"] = w_matrix.astype(np.float32)
+
+
+# ============================================================
+# Build network ONCE
+# ============================================================
+
+start_scope()
+defaultclock.dt = DT_SIM
+
+# Placeholder TimedArray — replaced each sample via run(namespace=...)
+I_timed = TimedArray(np.zeros((1, N_IN), dtype=float), dt=DT_SIM)
+
+# Input neurons
+eqs_in = """
+dv/dt = (-v - a) / tau_m + I_timed(t,i) / tau_current : 1
+da/dt = -a / tau_a : 1
+"""
+G_in = NeuronGroup(
+    N_IN, eqs_in,
+    threshold="v > v_th_in",
+    reset="v=0; a+=beta",
+    refractory=2*ms,
+    method="euler"
+)
+
+# Hidden neurons
+eqs_h = f"""
+dv/dt           = -v / tau_h                          : 1
+dvth/dt         = -(vth - {vth_rest}) / tau_vth       : 1
+deligibility/dt = -eligibility / tau_elig             : 1
+"""
+G_h = NeuronGroup(
+    N_H, eqs_h,
+    threshold="v > vth",
+    reset=f"v=0; vth=vth+{vth_jump}; eligibility=eligibility+1.0",
+    refractory=2*ms,
+    method="euler"
+)
+
+# STDP Synapses
+stdp_model = """
+w : 1
+dapre/dt  = -apre/taupre   : 1 (event-driven)
+dapost/dt = -apost/taupost : 1 (event-driven)
+"""
+on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost, wmin, wmax)"
+on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
+
+S = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
+S.connect()
+src = np.array(S.i)
+tgt = np.array(S.j)
+
+# Lateral inhibition
+lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0.8, 0, inf)')
+lat.connect(condition='i != j')
+
+# Pre-compute flat indices for weight-evolution pairs
+if NEED_W_SNAPSHOT:
+    we_pairs = RECORD_WEIGHTS_EVOLUTION
+    pair_flat_idx = []
+    for (pi, pj) in we_pairs:
+        mask = (src == pi) & (tgt == pj)
+        idx  = np.where(mask)[0]
+        pair_flat_idx.append(int(idx[0]) if len(idx) > 0 else None)
+    SNAPSHOT_INTERVAL = 500 * ms
+
+# Single persistent Network — monitors are swapped in/out each sample
+net = Network(G_in, G_h, S, lat)
+_active_monitors = []   # SpikeMonitor / StateMonitor objects currently in net
+_active_net_ops  = []   # network_operation objects currently in net
+
+
+def _reset_network_states():
+    """Zero all dynamic states; weights are reloaded separately."""
+    G_in.v          = 0
+    G_in.a          = 0
+    G_h.v           = 0
+    G_h.vth         = vth_init
+    G_h.eligibility = 0.0
+    S.apre          = 0
+    S.apost         = 0
 
 
 # ============================================================
@@ -204,7 +267,6 @@ for epoch_idx in range(EPOCHS):
     print(f"Epoch {epoch_idx}/{EPOCHS - 1}")
     print(f"{'='*60}")
 
-    # Reset per-epoch records
     epoch_records = {}
 
     if RECORD_WEIGHTS_EVOLUTION:
@@ -262,92 +324,43 @@ for epoch_idx in range(EPOCHS):
                 phase_per_band=1,
                 sust_spread_min=0.7,
                 sust_spread_max=1.3
-                )
+            )
         except Exception as e:
             print("Error:", e)
             continue
 
         duration_s = float(T) * float(DT_SIM)
 
-        # ── Brian2 setup ───────────────────────────────────────────────────────────
-
-        start_scope()
-        defaultclock.dt = DT_SIM
-
-        I_timed = TimedArray(I.T.astype(float), dt=DT_SIM)
-
-        # Input neurons
-        eqs_in = """
-        dv/dt = (-v - a) / tau_m + I_timed(t,i) / tau_current : 1
-        da/dt = -a / tau_a : 1
-        """
-        G_in = NeuronGroup(
-            N_IN, eqs_in,
-            threshold="v > v_th_in",
-            reset="v=0; a+=beta",
-            refractory=2*ms,
-            method="euler"
-        )
-
-        # Hidden neurons
-        eqs_h = f"""
-        dv/dt           = -v / tau_h                          : 1
-        dvth/dt         = -(vth - {vth_rest}) / tau_vth       : 1
-        deligibility/dt = -eligibility / tau_elig             : 1
-        """
-        G_h = NeuronGroup(
-            N_H, eqs_h,
-            threshold="v > vth",
-            reset=f"v=0; vth=vth+{vth_jump}; eligibility=eligibility+1.0",
-            refractory=2*ms,
-            method="euler"
-        )
-        G_h.vth         = vth_init
-        G_h.eligibility = 0.0
-
-        # STDP Synapses
-        stdp_model = """
-        w : 1
-        dapre/dt  = -apre/taupre   : 1 (event-driven)
-        dapost/dt = -apost/taupost : 1 (event-driven)
-        """
-        on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost, wmin, wmax)"
-        on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
-
-        S = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
-        S.connect()
-        src = np.array(S.i)
-        tgt = np.array(S.j)
+        # ── Reset states & reload weights ──────────────────────────────────────
+        _reset_network_states()
         S.w = w_matrix[src, tgt]
 
-        # Lateral inhibition
-        lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0.8, 0, inf)')
-        lat.connect(condition='i != j')
+        # New TimedArray for this sample's input current
+        I_timed_sample = TimedArray(I.T.astype(float), dt=DT_SIM)
 
-        # ── Monitors ───────────────────────────────────────────────────────────────
+        # ── Swap monitors: remove previous, add fresh ──────────────────────────
+        if _active_monitors or _active_net_ops:
+            net.remove(*(_active_monitors + _active_net_ops))
+            _active_monitors.clear()
+            _active_net_ops.clear()
 
+        hid_spike_mon = SpikeMonitor(G_h)   # always needed for homeostasis
         in_spike_mon  = SpikeMonitor(G_in) if NEED_IN_SPIKE_MON else None
-        hid_spike_mon = SpikeMonitor(G_h)   # always created
-
         in_v_mon  = StateMonitor(G_in, "v",          record=VMON_IN_INDICES)  if NEED_IN_V_MON  else None
         hid_v_mon = StateMonitor(G_h,  ["v", "vth"], record=VMON_HID_INDICES) if NEED_HID_V_MON else None
 
-        # ── Weight snapshot ────────────────────────────────────────────────────────
+        new_monitors = [hid_spike_mon]
+        if in_spike_mon is not None: new_monitors.append(in_spike_mon)
+        if in_v_mon     is not None: new_monitors.append(in_v_mon)
+        if hid_v_mon    is not None: new_monitors.append(hid_v_mon)
+        net.add(*new_monitors)
+        _active_monitors.extend(new_monitors)
 
-        SNAPSHOT_INTERVAL = 500 * ms
+        # ── Weight-snapshot operation ──────────────────────────────────────────
+        _sample_snap_times  = []
+        _sample_snap_values = [[] for _ in RECORD_WEIGHTS_EVOLUTION] if NEED_W_SNAPSHOT else []
 
         if NEED_W_SNAPSHOT:
-            we_pairs = RECORD_WEIGHTS_EVOLUTION
-            pair_flat_idx = []
-            for (pi, pj) in we_pairs:
-                mask = (src == pi) & (tgt == pj)
-                idx  = np.where(mask)[0]
-                pair_flat_idx.append(int(idx[0]) if len(idx) > 0 else None)
-
-            # Per-sample accumulators (reset each sample)
-            _sample_snap_times  = []
-            _sample_snap_values = [[] for _ in we_pairs]   # list per pair
-
             @network_operation(dt=SNAPSHOT_INTERVAL)
             def record_weights(t):
                 t_ms = float(t / ms)
@@ -359,38 +372,40 @@ for epoch_idx in range(EPOCHS):
                     epoch_records["we_values"][k].append(val)
                     _sample_snap_values[k].append(val)
 
-        # ── Run ────────────────────────────────────────────────────────────────────
+            net.add(record_weights)
+            _active_net_ops.append(record_weights)
 
-        run(T * DT_SIM)
+        # ── Run ────────────────────────────────────────────────────────────────
+        net.run(T * DT_SIM, namespace={
+            "I_timed": I_timed_sample,
+            "tau_m": tau_m, "tau_a": tau_a, "tau_current": tau_current,
+            "beta": beta, "v_th_in": v_th_in,
+            "tau_h": tau_h, "tau_vth": tau_vth, "tau_elig": tau_elig,
+            "taupre": taupre, "taupost": taupost,
+            "Apre_delta": Apre_delta, "Apost_delta": Apost_delta,
+            "wmin": wmin, "wmax": wmax,
+        })
 
-        # ── Extract weights ────────────────────────────────────────────────────────
-
+        # ── Extract weights ────────────────────────────────────────────────────
         w_new = np.zeros((N_IN, N_H))
         w_new[src, tgt] = np.array(S.w)
-        vth_final = np.array(G_h.vth)
 
         # Homeostatic normalisation
-        # (old adaptive threshold version:)
-        # limit = vth_final[nrn] * NORM_MARGIN
         spiked_neurons = np.unique(np.array(hid_spike_mon.i))
         for nrn in spiked_neurons:
-            limit = NORM_LIMIT
-            wsum  = w_new[:, nrn].sum()
-            if wsum > limit > 0:
-                w_new[:, nrn] *= limit / wsum
+            wsum = w_new[:, nrn].sum()
+            if wsum > NORM_LIMIT > 0:
+                w_new[:, nrn] *= NORM_LIMIT / wsum
 
-        w_new    = np.clip(w_new, wmin, wmax)
-        w_matrix = w_new
+        w_matrix = np.clip(w_new, wmin, wmax)
 
-        # ── Accumulate records ─────────────────────────────────────────────────────
-
+        # ── Accumulate records ─────────────────────────────────────────────────
         if NEED_W_SNAPSHOT:
-            # Store per-sample snapshot arrays
             epoch_records["we_sample_times"].append(
                 np.array(_sample_snap_times, dtype=np.float32)
             )
             epoch_records["we_sample_values"].append(
-                np.array(_sample_snap_values, dtype=np.float32)   # (n_pairs, n_snaps)
+                np.array(_sample_snap_values, dtype=np.float32)
             )
 
         if NEED_IN_V_MON and in_v_mon is not None:
@@ -426,14 +441,11 @@ for epoch_idx in range(EPOCHS):
             epoch_records["mfr_hid_sample_counts"].append(sample_counts.astype(np.int32))
             epoch_records["mfr_hid_sample_dur_s"].append(duration_s)
 
-        # Per-sample weight matrix snapshot (taken after normalisation, so it's the
-        # state the network carries into the *next* sample — i.e. what was learned so far)
         if RECORD_FINAL_WEIGHTS:
             epoch_records["weight_matrix_per_sample"].append(w_matrix.astype(np.float32))
 
-    # ── End of sample loop for this epoch ──────────────────────────────────────────
+    # ── End of sample loop for this epoch ──────────────────────────────────────
 
-    # Save epoch records
     print(f"\nSaving epoch {epoch_idx} records...")
     epoch_save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"history_epoch_{epoch_idx}.npz")
     epoch_arrays = {}
@@ -489,7 +501,7 @@ for epoch_idx in range(EPOCHS):
         epoch_arrays["raster_hid_n_neurons"] = np.int32(N_H)
 
     if RECORD_FINAL_WEIGHTS:
-        epoch_arrays["final_weights_matrix"] = w_matrix.astype(np.float32)
+        epoch_arrays["final_weights_matrix"]       = w_matrix.astype(np.float32)
         epoch_arrays["weight_matrix_per_sample"]   = _pack_ragged(epoch_records["weight_matrix_per_sample"])
         epoch_arrays["weight_matrix_n_samples"]    = np.int32(len(epoch_records["weight_matrix_per_sample"]))
 
@@ -539,7 +551,6 @@ if RECORD_FINAL_WEIGHTS:
     w_flat  = W_final.flatten()
     top_k   = TOP_K_WEIGHTS_VIZ
 
-    # Sort by descending weight value
     top_k_indices = np.argsort(-w_flat)[:top_k]
     top_k_values  = w_flat[top_k_indices]
 
@@ -555,14 +566,6 @@ if RECORD_FINAL_WEIGHTS:
             i_idx = int(flat_idx) // N_H
             j_idx = int(flat_idx) % N_H
             flog.write(f"{rank:>5}  {i_idx:>10}  {j_idx:>10}  {val:>12.6f}\n")
-
-    print(f"\nTop {top_k} Weights (sorted descending):")
-    print(f"{'Rank':>5}  {'src (in)':>10}  {'dst (hid)':>10}  {'weight':>12}")
-    print("-" * 45)
-    for rank, (flat_idx, val) in enumerate(zip(top_k_indices, top_k_values), 1):
-        i_idx = int(flat_idx) // N_H
-        j_idx = int(flat_idx) % N_H
-        print(f"{rank:>5}  {i_idx:>10}  {j_idx:>10}  {val:>12.6f}")
 
     print(f"\nSaved top-k log to: {log_path}")
 
