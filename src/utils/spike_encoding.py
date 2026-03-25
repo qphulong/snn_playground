@@ -125,9 +125,14 @@ def compute_spike_input_current(
             idx += 1
 
     I += 0.01 * np.random.randn(*I.shape).astype(np.float32)
-
+    assert audio_sample_rate % simulation_sample_rate == 0, (
+        f"audio_sample_rate ({audio_sample_rate}) must be divisible by "
+        f"simulation_sample_rate ({simulation_sample_rate})"
+    )
     decimation_factor = audio_sample_rate // simulation_sample_rate
-    I_sim = I.reshape(N_in, -1, decimation_factor).mean(axis=2)
-    T_sim = I_sim.shape[1]
+    # Trim to nearest multiple so reshape never fails
+    T_trim = (T // decimation_factor) * decimation_factor
+    I_sim  = I[:, :T_trim].reshape(N_in, -1, decimation_factor).mean(axis=2)
+    T_sim  = I_sim.shape[1]
 
     return I_sim, T_sim
