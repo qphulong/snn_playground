@@ -63,8 +63,8 @@ NEED_W_SNAPSHOT    = bool(RECORD_WEIGHTS_EVOLUTION)
 # Find dataset
 # ============================================================
 
-wav_files = sorted(glob.glob("datasets/vox1_small_test/**/*.wav", recursive=True))
-print(f"Found {len(wav_files)} files in datasets/vox1_small_test")
+wav_files = sorted(glob.glob("datasets/vox1_single_person/dev/*.wav", recursive=True))
+print(f"Found {len(wav_files)} files in datasets/vox1_single_person/dev/")
 
 
 # ============================================================
@@ -77,41 +77,41 @@ N_H  = 700
 DT_SIM = 1 * ms
 
 # -- Input layer (adaptive LIF) --
-tau_m       = 40 * ms
-tau_a       = 20 * ms
+tau_m       = 50 * ms
+tau_a       = 100 * ms
 tau_current = 1 * ms
-beta        = 0.25
+beta        = 0.15
 v_th_in     = 1.0
 
 # -- Hidden layer (adaptive-threshold LIF) --
 tau_h        = 50 * ms
-tau_vth      = 100 * ms
-tau_elig     = 20 * ms
+tau_vth      = 200 * ms
+
 vth_rest     = 0.8
 vth_init     = 0.8
-vth_jump     = 1
+vth_jump     = 0.2
 
 # -- STDP --
 taupre      = 20 * ms
 taupost     = 20 * ms
 Apre_delta  =  0.005
-Apost_delta = -0.0055
+Apost_delta = -0.005
 
 # -- Synaptic weight bounds --
-wmax       = 1.0
+wmax       = 1
 wmin       = 0.0
-W_INIT_SUM = 4
+W_INIT_SUM = 1
 
 # -- Weight initialization --
 # (old uniform init:)
 # w_matrix = np.random.uniform(0, 1, size=(N_IN, N_H))
 # w_matrix = w_matrix / w_matrix.sum(axis=0, keepdims=True) * W_INIT_SUM
 # w_matrix = np.clip(w_matrix, wmin, wmax)
-W_INIT_SIGMA     = N_IN / 5   # Gaussian bell width
-W_INIT_NOISE_STD = 0.005      # symmetry-breaking noise
+W_INIT_SIGMA     = N_IN / 6   # Gaussian bell width
+W_INIT_NOISE_STD = 0.002      # symmetry-breaking noise
 
 # -- Homeostatic normalisation --
-NORM_LIMIT = 4               # column weight-sum cap after each sample
+NORM_LIMIT = 1            # column weight-sum cap after each sample
 
 # -- Lateral inhibition --
 lat_inh = 1
@@ -294,26 +294,24 @@ for epoch_idx in range(EPOCHS):
         eqs_h = f"""
         dv/dt           = -v / tau_h                          : 1
         dvth/dt         = -(vth - {vth_rest}) / tau_vth       : 1
-        deligibility/dt = -eligibility / tau_elig             : 1
         """
         G_h = NeuronGroup(
             N_H, eqs_h,
             threshold="v > vth",
-            reset=f"v=0; vth=vth+{vth_jump}; eligibility=eligibility+1.0",
+            reset=f"v=0; vth=vth+{vth_jump};",
             refractory=2*ms,
             method="euler"
         )
         G_h.vth         = vth_init
-        G_h.eligibility = 0.0
-
+        
         # STDP Synapses
         stdp_model = """
         w : 1
         dapre/dt  = -apre/taupre   : 1 (event-driven)
         dapost/dt = -apost/taupost : 1 (event-driven)
         """
-        on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost, wmin, wmax)"
-        on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
+        on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost*(w-wmin), wmin, wmax)"
+        on_post = "apost += Apost_delta\nw = clip(w + apre*(wmax-w), wmin, wmax)"
 
         S = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
         S.connect()
@@ -322,7 +320,7 @@ for epoch_idx in range(EPOCHS):
         S.w = w_matrix[src, tgt]
 
         # Lateral inhibition
-        lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0.8, 0, inf)')
+        lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0.1, 0, inf)')
         lat.connect(condition='i != j')
 
         # ── Monitors ───────────────────────────────────────────────────────────────

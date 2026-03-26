@@ -11,8 +11,9 @@ epochs: 1
 
 # Weight evolution: list of [input_index, hidden_index] pairs to track over time.
 weights_evolution:
-  - [460, 453]
-  - [ 87, 57 ]
+  - [122, 373]
+  - [190, 292]
+  - [300, 300]
 
 # Membrane potential for input neurons.
 # Each entry is either:
@@ -36,6 +37,13 @@ membrane_potential_hidden:
   - [500,[500,1000]]
   - [600,[500,1000]]
   - [699,[500,1000]]
+  - [100]
+  - [200]
+  - [300]
+  - [400]
+  - [500]
+  - [600]
+  - [699] 
 
 # Spike raster plot for input layer (all neurons, per sample).
 spike_raster_input: true
@@ -63,4 +71,4 @@ visualize_epoch: [0]
 # Which sample indices to visualize (0-based, within selected epochs).
 # Applies to: membrane_potential and spike_raster plots.
 # null or empty list = visualize all recorded samples.
-visualize_samples: [39]
+visualize_samples: [397]
