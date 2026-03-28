@@ -297,9 +297,9 @@ for epoch_idx in range(EPOCHS):
         """
         G_h = NeuronGroup(
             N_H, eqs_h,
-            threshold="v > vth",
-            reset=f"v=0; vth=vth+{vth_jump};",
-            refractory=2*ms,
+            threshold="False",   # disable automatic spikes
+            # reset=f"v=0; vth=vth+{vth_jump};",
+            # refractory=2*ms,
             method="euler"
         )
         G_h.vth         = vth_init
@@ -311,7 +311,8 @@ for epoch_idx in range(EPOCHS):
         dapost/dt = -apost/taupost : 1 (event-driven)
         """
         on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost, wmin, wmax)"
-        on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
+        # on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
+        on_post = ""
 
         S = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
         S.connect()
@@ -320,8 +321,37 @@ for epoch_idx in range(EPOCHS):
         S.w = w_matrix[src, tgt]
 
         # Lateral inhibition
-        lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0, 0, inf)')
-        lat.connect(condition='i != j')
+        # lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0, 0, inf)')
+        # lat.connect(condition='i != j')
+        
+        # ── Manual WTA ─────────────────────────────────────────────────────────────── 
+        @network_operation(dt=defaultclock.dt)
+        def wta_step():
+            v = G_h.v[:]
+            vth = G_h.vth[:]
+
+            # find candidates
+            candidates = np.where(v >= vth)[0]
+
+            if len(candidates) > 0:
+                # pick winner
+                winner = candidates[np.argmax(v[candidates])]
+
+                # --- FIRE WINNER ---
+                G_h.v[winner] = 0
+                G_h.vth[winner] += vth_jump
+
+                # --- STDP POST UPDATE (MANUAL) ---
+                # emulate post spike for winner
+                idx = (tgt == winner)
+                S.apost[idx] += Apost_delta
+
+                # apply LTP: w += apre
+                S.w[idx] = np.clip(S.w[idx] + S.apre[idx], wmin, wmax)
+
+                # --- OPTIONAL: suppress others ---
+                G_h.v[candidates] = 0
+                G_h.v *= 0.8
 
         # ── Monitors ───────────────────────────────────────────────────────────────
 
