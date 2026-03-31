@@ -245,6 +245,7 @@ for epoch_idx, npz_path in enumerate(epoch_files):
         t_all    = data["vmon_hid_t_all"]
         windows  = data["vmon_hid_windows"]
         n_total  = int(data["vmon_hid_n_samples"])
+        is_winner_all = data["vmon_hid_is_winner_all"] if "vmon_hid_is_winner_all" in keys else None
 
         win_lookup = {int(row[0]): (float(row[1]), float(row[2])) for row in windows}
 
@@ -252,6 +253,7 @@ for epoch_idx, npz_path in enumerate(epoch_files):
             v   = v_all[s]
             vth = vth_all[s]
             t   = t_all[s]
+            is_winner = is_winner_all[s] if is_winner_all is not None else None
 
             for k, nid in enumerate(neurons):
                 t_start, t_end = win_lookup.get(int(nid), (-1.0, -1.0))
@@ -259,9 +261,16 @@ for epoch_idx, npz_path in enumerate(epoch_files):
                 t_w   = t[mask]
                 v_w   = v[k][mask]
                 vth_w = vth[k][mask]
+                is_winner_w = is_winner[k][mask] if is_winner is not None else None
 
-                crossed = (v_w[:-1] < vth_w[:-1]) & (v_w[1:] >= vth_w[1:])
-                spike_times = t_w[np.where(crossed)[0] + 1] if len(v_w) > 1 else np.array([])
+                # Detect spikes: neuron fires when is_winner is True (WTA mechanism)
+                if is_winner_w is not None:
+                    spike_indices = np.where(is_winner_w)[0]
+                    spike_times = t_w[spike_indices] if len(spike_indices) > 0 else np.array([])
+                else:
+                    # Fallback to threshold crossing if is_winner not available
+                    crossed = (v_w[:-1] < vth_w[:-1]) & (v_w[1:] >= vth_w[1:])
+                    spike_times = t_w[np.where(crossed)[0] + 1] if len(v_w) > 1 else np.array([])
 
                 fig, ax = plt.subplots(figsize=(11, 3))
                 ax.plot(t_w, v_w,   lw=0.8, color="steelblue", zorder=2, label="v")

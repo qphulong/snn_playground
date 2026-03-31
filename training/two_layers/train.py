@@ -162,6 +162,7 @@ if NEED_HID_V_MON:
     records["vmon_hid_windows"]  = VMON_HID_WINDOWS
     records["vmon_hid_v"]        = []
     records["vmon_hid_vth"]      = []
+    records["vmon_hid_is_winner"] = []
     records["vmon_hid_t"]        = []
 
 if RECORD_SPIKE_RASTER_INPUT:
@@ -227,6 +228,7 @@ for epoch_idx in range(EPOCHS):
         epoch_records["vmon_hid_windows"]  = VMON_HID_WINDOWS
         epoch_records["vmon_hid_v"]        = []
         epoch_records["vmon_hid_vth"]      = []
+        epoch_records["vmon_hid_is_winner"] = []
         epoch_records["vmon_hid_t"]        = []
 
     if RECORD_SPIKE_RASTER_INPUT:
@@ -357,8 +359,8 @@ for epoch_idx in range(EPOCHS):
         in_spike_mon  = SpikeMonitor(G_in) if NEED_IN_SPIKE_MON else None
         hid_spike_mon = SpikeMonitor(G_h)   # always created
 
-        in_v_mon  = StateMonitor(G_in, "v",          record=VMON_IN_INDICES)  if NEED_IN_V_MON  else None
-        hid_v_mon = StateMonitor(G_h,  ["v", "vth"], record=VMON_HID_INDICES) if NEED_HID_V_MON else None
+        in_v_mon  = StateMonitor(G_in, "v",                    record=VMON_IN_INDICES)  if NEED_IN_V_MON  else None
+        hid_v_mon = StateMonitor(G_h,  ["v", "vth", "is_winner"], record=VMON_HID_INDICES) if NEED_HID_V_MON else None
 
         # ── Weight snapshot ────────────────────────────────────────────────────────
 
@@ -428,9 +430,10 @@ for epoch_idx in range(EPOCHS):
             epoch_records["vmon_in_t"].append(np.array(in_v_mon.t / ms, dtype=np.float32))
 
         if NEED_HID_V_MON and hid_v_mon is not None:
-            epoch_records["vmon_hid_v"].append(np.array(hid_v_mon.v,     dtype=np.float32))
-            epoch_records["vmon_hid_vth"].append(np.array(hid_v_mon.vth, dtype=np.float32))
-            epoch_records["vmon_hid_t"].append(np.array(hid_v_mon.t / ms, dtype=np.float32))
+            epoch_records["vmon_hid_v"].append(np.array(hid_v_mon.v,        dtype=np.float32))
+            epoch_records["vmon_hid_vth"].append(np.array(hid_v_mon.vth,    dtype=np.float32))
+            epoch_records["vmon_hid_is_winner"].append(np.array(hid_v_mon.is_winner, dtype=bool))
+            epoch_records["vmon_hid_t"].append(np.array(hid_v_mon.t / ms,   dtype=np.float32))
 
         if RECORD_SPIKE_RASTER_INPUT and in_spike_mon is not None:
             epoch_records["raster_in_i"].append(np.array(in_spike_mon.i,      dtype=np.int32))
@@ -498,6 +501,7 @@ for epoch_idx in range(EPOCHS):
         epoch_arrays["vmon_hid_indices"]   = np.array(VMON_HID_INDICES,  dtype=np.int32)
         epoch_arrays["vmon_hid_v_all"]     = _pack_ragged(epoch_records["vmon_hid_v"])
         epoch_arrays["vmon_hid_vth_all"]   = _pack_ragged(epoch_records["vmon_hid_vth"])
+        epoch_arrays["vmon_hid_is_winner_all"] = _pack_ragged(epoch_records["vmon_hid_is_winner"])
         epoch_arrays["vmon_hid_t_all"]     = _pack_ragged(epoch_records["vmon_hid_t"])
         epoch_arrays["vmon_hid_n_samples"] = np.int32(len(epoch_records["vmon_hid_v"]))
         win_rows = []
