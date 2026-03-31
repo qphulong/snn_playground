@@ -62,9 +62,9 @@ NEED_W_SNAPSHOT    = bool(RECORD_WEIGHTS_EVOLUTION)
 # ============================================================
 # Find dataset
 # ============================================================
-
-wav_files = sorted(glob.glob("datasets/vox1_single_person/dev/*.wav", recursive=True))
-print(f"Found {len(wav_files)} files in datasets/vox1_single_person/dev/")
+# TODO: set the path
+wav_files = sorted(glob.glob("datasets/vox1_single_person_nano/dev/*.wav", recursive=True))
+print(f"Found {len(wav_files)} files in datasets/vox1_single_person_nano/dev/")
 
 
 # ============================================================
@@ -100,8 +100,9 @@ Apost_delta = -0.0055
 # -- Synaptic weight bounds --
 wmax       = 1.0
 wmin       = 0.0
-W_INIT_SUM = 4
+W_INIT_SUM = 8
 
+# TODO: consider this
 # -- Weight initialization --
 # (old uniform init:)
 # w_matrix = np.random.uniform(0, 1, size=(N_IN, N_H))
@@ -111,7 +112,7 @@ W_INIT_SIGMA     = N_IN / 5   # Gaussian bell width
 W_INIT_NOISE_STD = 0.005      # symmetry-breaking noise
 
 # -- Homeostatic normalisation --
-NORM_LIMIT = 4               # column weight-sum cap after each sample
+NORM_LIMIT = 8               # column weight-sum cap after each sample
 
 # -- Lateral inhibition --
 lat_inh = 1
@@ -294,12 +295,13 @@ for epoch_idx in range(EPOCHS):
         eqs_h = f"""
         dv/dt           = -v / tau_h                          : 1
         dvth/dt         = -(vth - {vth_rest}) / tau_vth       : 1
+        is_winner                                             : boolean
         """
         G_h = NeuronGroup(
             N_H, eqs_h,
-            threshold="False",   # disable automatic spikes
-            # reset=f"v=0; vth=vth+{vth_jump};",
-            # refractory=2*ms,
+            threshold="v > vth and is_winner",
+            reset=f"v=0; vth=vth+{vth_jump};",
+            refractory=2*ms,
             method="euler"
         )
         G_h.vth         = vth_init
@@ -310,9 +312,9 @@ for epoch_idx in range(EPOCHS):
         dapre/dt  = -apre/taupre   : 1 (event-driven)
         dapost/dt = -apost/taupost : 1 (event-driven)
         """
+        # TODO: edit the update equation here
         on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost, wmin, wmax)"
-        # on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
-        on_post = ""
+        on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
 
         S = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
         S.connect()
@@ -320,39 +322,36 @@ for epoch_idx in range(EPOCHS):
         tgt = np.array(S.j)
         S.w = w_matrix[src, tgt]
 
-        # Lateral inhibition
-        # lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post * 0, 0, inf)')
-        # lat.connect(condition='i != j')
+        # Lateral inhibition # TODO: consider this
+        lat = Synapses(G_h, G_h, on_pre='v_post = clip(v_post, 0, inf)')
+        lat.connect(condition='i != j')
         
-        # ── Manual WTA ─────────────────────────────────────────────────────────────── 
-        @network_operation(dt=defaultclock.dt)
-        def wta_step():
+        # ── Decide Winner ───────────────────────────────────────────────────────────────
+        @network_operation(when='before_thresholds')
+        def determine_winner():
             v = G_h.v[:]
             vth = G_h.vth[:]
 
-            # find candidates
-            candidates = np.where(v >= vth)[0]
+            # Step 1: find neurons that crossed threshold
+            crossed = v > vth
 
-            if len(candidates) > 0:
-                # pick winner
-                winner = candidates[np.argmax(v[candidates])]
+            if np.any(crossed):
+                # Step 2: among them, pick the one with lowest threshold
+                candidates = np.where(crossed)[0]
+                winner_index = candidates[np.argmin(vth[candidates])]
 
-                # --- FIRE WINNER ---
-                G_h.v[winner] = 0
-                G_h.vth[winner] += vth_jump
+                # Step 3: set winner flag
+                G_h.is_winner[:] = False
+                G_h.is_winner[winner_index] = True
 
-                # --- STDP POST UPDATE (MANUAL) ---
-                # emulate post spike for winner
-                idx = (tgt == winner)
-                S.apost[idx] += Apost_delta
-
-                # apply LTP: w += apre
-                S.w[idx] = np.clip(S.w[idx] + S.apre[idx], wmin, wmax)
-
-                # --- OPTIONAL: suppress others ---
-                G_h.v[candidates] = 0
-                G_h.v *= 0.8
-
+                # Step 4: reset losers (those that crossed but are not winner)
+                losers = candidates[candidates != winner_index]
+                G_h.v[losers] = 0
+            else:
+                # no neuron fires
+                G_h.is_winner[:] = False
+        
+        
         # ── Monitors ───────────────────────────────────────────────────────────────
 
         in_spike_mon  = SpikeMonitor(G_in) if NEED_IN_SPIKE_MON else None
@@ -398,12 +397,14 @@ for epoch_idx in range(EPOCHS):
         w_new[src, tgt] = np.array(S.w)
         vth_final = np.array(G_h.vth)
 
+        # TODO: consider this
         # Homeostatic normalisation
         # (old adaptive threshold version:)
         # limit = vth_final[nrn] * NORM_MARGIN
         spiked_neurons = np.unique(np.array(hid_spike_mon.i))
         for nrn in spiked_neurons:
-            limit = NORM_LIMIT
+            # limit = NORM_LIMIT
+            limit = vth_final[nrn] * 8
             wsum  = w_new[:, nrn].sum()
             if wsum > limit > 0:
                 w_new[:, nrn] *= limit / wsum
