@@ -590,14 +590,6 @@ if RECORD_FINAL_WEIGHTS:
             j_idx = int(flat_idx) % N_H
             flog.write(f"{rank:>5}  {i_idx:>10}  {j_idx:>10}  {val:>12.6f}\n")
 
-    print(f"\nTop {top_k} Weights (sorted descending):")
-    print(f"{'Rank':>5}  {'src (in)':>10}  {'dst (hid)':>10}  {'weight':>12}")
-    print("-" * 45)
-    for rank, (flat_idx, val) in enumerate(zip(top_k_indices, top_k_values), 1):
-        i_idx = int(flat_idx) // N_H
-        j_idx = int(flat_idx) % N_H
-        print(f"{rank:>5}  {i_idx:>10}  {j_idx:>10}  {val:>12.6f}")
-
     print(f"\nSaved top-k log to: {log_path}")
 
 

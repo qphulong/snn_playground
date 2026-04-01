@@ -36,11 +36,16 @@ cfg_path = os.path.join(SCRIPT_DIR, "record_config.yaml")
 
 visualize_samples = None
 visualize_epoch = None
+weights_per_neuron = None
+track_weight_delta = False
+
 if os.path.exists(cfg_path):
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
     visualize_samples = cfg.get("visualize_samples", None)
     visualize_epoch = cfg.get("visualize_epoch", [])
+    weights_per_neuron = cfg.get("weights_per_neuron", None)
+    track_weight_delta = cfg.get("track_weight_delta", False)
 
 # If visualize_epoch is empty/None, visualize all epochs
 if not visualize_epoch:
@@ -484,6 +489,108 @@ for epoch_idx, npz_path in enumerate(epoch_files):
                 epoch_dir=epoch_dir
             )
             
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 9. Spike counts — hidden layer (per sample, computed from spike raster)
+    # ══════════════════════════════════════════════════════════════════════════════
+
+    if "raster_hid_i" in keys and "raster_hid_t" in keys:
+        raster_i  = data["raster_hid_i"]
+        n_total   = int(data["raster_hid_n_samples"])
+        n_neurons = int(data["raster_hid_n_neurons"])
+
+        for s in _sample_indices(n_total):
+            sp_i = raster_i[s]
+
+            # Compute spike counts per neuron
+            counts = np.bincount(sp_i.astype(np.int32), minlength=n_neurons) if len(sp_i) > 0 else np.zeros(n_neurons, dtype=np.int32)
+
+            fig, ax = plt.subplots(figsize=(12, 4))
+            ax.bar(np.arange(n_neurons), counts, width=1.0, color="mediumseagreen", linewidth=0)
+            ax.set_title(f"Spike Count — Hidden Layer  |  Epoch {epoch_idx}, Sample {s}",
+                         fontsize=13, fontweight="bold")
+            ax.set_xlabel("Neuron index")
+            ax.set_ylabel("Spike count")
+            ax.set_xlim(-0.5, n_neurons - 0.5)
+            ax.set_ylim(bottom=0)
+            ax.grid(True, axis="y", alpha=0.3)
+            plt.tight_layout()
+            save(fig, f"spike_count_hidden_sample{s:03d}.png", epoch_dir=epoch_dir)
+
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 10. Weight delta (mean Δw over time, computed from weight evolution)
+    # ══════════════════════════════════════════════════════════════════════════════
+
+    if track_weight_delta and "we_pairs" in keys and "we_values" in keys:
+        pairs = data["we_pairs"]       # (n_pairs, 2)
+        values = data["we_values"]     # (n_pairs, n_total_snaps)
+
+        x_axis  = np.arange(values.shape[1])
+        x_label = "Snapshot index"
+
+        for k, (pi, pj) in enumerate(pairs):
+            w_vals = values[k]
+            # Compute delta: difference from previous snapshot
+            deltas = np.diff(w_vals, prepend=w_vals[0])  # first delta is 0
+
+            fig, ax = plt.subplots(figsize=(11, 3))
+            ax.plot(x_axis, deltas, lw=1.5, color=f"C{k % 10}", marker='o', markersize=3)
+            ax.axhline(0, color='black', lw=0.5, ls='--', alpha=0.5)
+            ax.set_title(
+                f"Mean Weight Delta (epoch {epoch_idx}, all samples) — synapse in[{pi}] → hid[{pj}]",
+                fontsize=12, fontweight="bold"
+            )
+            ax.set_xlabel(x_label)
+            ax.set_ylabel("Δw")
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            save(fig, f"weight_delta_all_in{pi:04d}_hid{pj:04d}.png", epoch_dir=epoch_dir)
+
+
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 11. Incoming weights per neuron (weights_per_neuron, computed from weight matrix)
+    # ══════════════════════════════════════════════════════════════════════════════
+
+    if weights_per_neuron and "weight_matrix_per_sample" in keys and "weight_matrix_n_samples" in keys:
+        wm_per_sample = data["weight_matrix_per_sample"]
+        n_total = int(data["weight_matrix_n_samples"])
+
+        for s in _sample_indices(n_total):
+            W = wm_per_sample[s]   # (N_IN, N_H)
+
+            for nid in weights_per_neuron:
+                nid = int(nid)
+                if nid < W.shape[1]:
+                    weights = W[:, nid]  # incoming weights for neuron nid
+
+                    fig = plt.figure(figsize=(14, 5))
+                    gs = gridspec.GridSpec(1, 2, width_ratios=[2, 1], figure=fig)
+                    fig.suptitle(f"Incoming Weights — Hidden Neuron {nid}  |  Epoch {epoch_idx}, Sample {s}",
+                                 fontsize=13, fontweight="bold")
+
+                    # Left: bar chart of weights by input neuron index
+                    ax_bar = fig.add_subplot(gs[0])
+                    ax_bar.bar(np.arange(len(weights)), weights, width=0.8, color="steelblue", linewidth=0)
+                    ax_bar.set_xlabel("Input neuron index")
+                    ax_bar.set_ylabel("Weight magnitude")
+                    ax_bar.set_xlim(-0.5, len(weights) - 0.5)
+                    ax_bar.set_ylim(bottom=0)
+                    ax_bar.grid(True, axis="y", alpha=0.3)
+
+                    # Right: histogram of weight distribution
+                    ax_hist = fig.add_subplot(gs[1])
+                    w_nonzero = weights[weights > 0]
+                    if len(w_nonzero) > 0:
+                        ax_hist.hist(w_nonzero, bins=40, color="steelblue", edgecolor="none", density=True)
+                    ax_hist.set_xlabel("Weight value")
+                    ax_hist.set_ylabel("Density")
+                    ax_hist.set_title("Distribution\n(non-zero)")
+                    ax_hist.grid(True, alpha=0.3)
+
+                    plt.tight_layout()
+                    save(fig, f"weights_per_neuron_sample{s:03d}_neuron{nid:04d}.png", epoch_dir=epoch_dir)
+
+
     # ══════════════════════════════════════════════════════════════════════════════
     # Initial weight matrix
     # ══════════════════════════════════════════════════════════════════════════════
