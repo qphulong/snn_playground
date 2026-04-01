@@ -202,14 +202,14 @@ for epoch_idx, npz_path in enumerate(epoch_files):
         n_total    = int(data["vmon_in_n_samples"])
         v_th_in    = float(data["v_th_in"]) if "v_th_in" in keys else 1.0
 
-        win_lookup = {int(row[0]): (float(row[1]), float(row[2])) for row in windows}
-
         for s in _sample_indices(n_total):
             v = v_all[s]
             t = t_all[s]
 
             for k, nid in enumerate(neurons):
-                t_start, t_end = win_lookup.get(int(nid), (-1.0, -1.0))
+                # Get window from windows array at index k (handles duplicate neurons with different windows)
+                t_start = float(windows[k, 1]) if windows[k, 1] >= 0 else -1.0
+                t_end = float(windows[k, 2]) if windows[k, 2] >= 0 else -1.0
                 mask = _window_mask(t, t_start, t_end)
                 t_w  = t[mask]
                 v_w  = v[k][mask]
@@ -236,7 +236,8 @@ for epoch_idx, npz_path in enumerate(epoch_files):
                 y_hi = max(v_th_in * 1.35, v_w.max() * 1.1) if len(v_w) else v_th_in * 1.5
                 ax.set_ylim(y_lo, y_hi)
                 plt.tight_layout()
-                save(fig, f"vmon_input_sample{s:03d}_neuron{nid:04d}.png", epoch_dir=epoch_dir)
+                win_suffix = f"_window{t_start:.0f}_{t_end:.0f}ms" if t_start >= 0 else ""
+                save(fig, f"vmon_input_sample{s:03d}_neuron{nid:04d}{win_suffix}.png", epoch_dir=epoch_dir)
 
 
     # ══════════════════════════════════════════════════════════════════════════════
@@ -252,8 +253,6 @@ for epoch_idx, npz_path in enumerate(epoch_files):
         n_total  = int(data["vmon_hid_n_samples"])
         is_winner_all = data["vmon_hid_is_winner_all"] if "vmon_hid_is_winner_all" in keys else None
 
-        win_lookup = {int(row[0]): (float(row[1]), float(row[2])) for row in windows}
-
         for s in _sample_indices(n_total):
             v   = v_all[s]
             vth = vth_all[s]
@@ -261,7 +260,9 @@ for epoch_idx, npz_path in enumerate(epoch_files):
             is_winner = is_winner_all[s] if is_winner_all is not None else None
 
             for k, nid in enumerate(neurons):
-                t_start, t_end = win_lookup.get(int(nid), (-1.0, -1.0))
+                # Get window from windows array at index k (handles duplicate neurons with different windows)
+                t_start = float(windows[k, 1]) if windows[k, 1] >= 0 else -1.0
+                t_end = float(windows[k, 2]) if windows[k, 2] >= 0 else -1.0
                 mask  = _window_mask(t, t_start, t_end)
                 t_w   = t[mask]
                 v_w   = v[k][mask]
@@ -297,7 +298,8 @@ for epoch_idx, npz_path in enumerate(epoch_files):
                 y_hi = max(vth_w.max() * 1.35, v_w.max() * 1.1) if len(v_w) else 2.0
                 ax.set_ylim(y_lo, y_hi)
                 plt.tight_layout()
-                save(fig, f"vmon_hidden_sample{s:03d}_neuron{nid:04d}.png", epoch_dir=epoch_dir)
+                win_suffix = f"_window{t_start:.0f}_{t_end:.0f}ms" if t_start >= 0 else ""
+                save(fig, f"vmon_hidden_sample{s:03d}_neuron{nid:04d}{win_suffix}.png", epoch_dir=epoch_dir)
 
 
     # ══════════════════════════════════════════════════════════════════════════════

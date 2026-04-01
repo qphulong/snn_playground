@@ -34,19 +34,19 @@ TOP_K_WEIGHTS_VIZ            = cfg.get("top_k_weights_viz", 50)
 
 
 def _parse_vmon_entries(raw):
-    """Return (neuron_indices: list[int], windows: dict[int -> [a,b] or None])."""
+    """Return (neuron_indices: list[int], windows: list[(nid, window)])."""
     indices = []
-    windows = {}
+    windows = []  # list of (nid, window) tuples to preserve duplicates
     for entry in (raw or []):
         if isinstance(entry, (int, float)):
             nid = int(entry)
             indices.append(nid)
-            windows[nid] = None
+            windows.append((nid, None))
         else:
             nid = int(entry[0])
             win = entry[1] if len(entry) > 1 else None
             indices.append(nid)
-            windows[nid] = win
+            windows.append((nid, win))
     return indices, windows
 
 VMON_IN_INDICES,  VMON_IN_WINDOWS  = _parse_vmon_entries(RECORD_VMON_INPUT_RAW)
@@ -86,7 +86,6 @@ v_th_in     = 1.0
 # -- Hidden layer (adaptive-threshold LIF) --
 tau_h        = 50 * ms
 tau_vth      = 100 * ms
-tau_elig     = 20 * ms
 vth_rest     = 0.8
 vth_init     = 0.8
 vth_jump     = 0.3
@@ -492,8 +491,7 @@ for epoch_idx in range(EPOCHS):
         epoch_arrays["vmon_in_t_all"]     = _pack_ragged(epoch_records["vmon_in_t"])
         epoch_arrays["vmon_in_n_samples"] = np.int32(len(epoch_records["vmon_in_v"]))
         win_rows = []
-        for nid in VMON_IN_INDICES:
-            w = VMON_IN_WINDOWS.get(nid)
+        for nid, w in VMON_IN_WINDOWS:
             win_rows.append([nid, float(w[0]), float(w[1])] if w else [nid, -1.0, -1.0])
         epoch_arrays["vmon_in_windows"] = np.array(win_rows, dtype=np.float32)
 
@@ -505,8 +503,7 @@ for epoch_idx in range(EPOCHS):
         epoch_arrays["vmon_hid_t_all"]     = _pack_ragged(epoch_records["vmon_hid_t"])
         epoch_arrays["vmon_hid_n_samples"] = np.int32(len(epoch_records["vmon_hid_v"]))
         win_rows = []
-        for nid in VMON_HID_INDICES:
-            w = VMON_HID_WINDOWS.get(nid)
+        for nid, w in VMON_HID_WINDOWS:
             win_rows.append([nid, float(w[0]), float(w[1])] if w else [nid, -1.0, -1.0])
         epoch_arrays["vmon_hid_windows"] = np.array(win_rows, dtype=np.float32)
 
