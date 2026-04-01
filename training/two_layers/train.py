@@ -467,7 +467,7 @@ for epoch_idx in range(EPOCHS):
 
     # Save epoch records
     print(f"\nSaving epoch {epoch_idx} records...")
-    epoch_save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"history_epoch_{epoch_idx}.npz")
+    epoch_save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"history_epoch_{epoch_idx:03d}.npz")
     epoch_arrays = {}
 
     def _pack_ragged(list_of_arrays):
