@@ -41,7 +41,7 @@ def compute_spikernel(s, t, n, mu, lam):
     return float(K_prev[L1, L2])
 
 
-def spikernel(s, t, n=5, mu=0.99, lam=0.7, q=1.0, normalise=True):
+def spikernel_2(s, t, n=5, mu=0.99, lam=0.7, q=1.0, normalise=True):
     k_st = sum(q ** i * compute_spikernel(s, t, i, mu, lam) for i in range(1, n + 1))
     if normalise:
         k_ss = sum(q ** i * compute_spikernel(s, s, i, mu, lam) for i in range(1, n + 1))
@@ -58,7 +58,7 @@ def build_kernel_matrix(sequences, n=5, mu=0.99, lam=0.7, q=1.0, normalise=True)
     K = np.zeros((m, m), dtype=np.float64)
     for i in range(m):
         for j in range(i, m):
-            val = spikernel(sequences[i], sequences[j], n=n, mu=mu, lam=lam, q=q, normalise=normalise)
+            val = spikernel_2(sequences[i], sequences[j], n=n, mu=mu, lam=lam, q=q, normalise=normalise)
             K[i, j] = val
             K[j, i] = val
     return K
@@ -82,7 +82,7 @@ def build_kernel_matrix(sequences, n=5, mu=0.99, lam=0.7, q=1.0, normalise=True)
 
 def run_test(name, s, t, expected_desc, n=5, mu=0.99, lam=0.7):
     # FIX (a): pass mu and lam by keyword so order cannot be confused
-    result = spikernel(s, t, n=n, mu=mu, lam=lam)
+    result = spikernel_2(s, t, n=n, mu=mu, lam=lam)
     print(f"\n=== {name} ===")
     print(f"Expected: {expected_desc}")
     print(f"Actual:   {result:.6f}")
@@ -120,7 +120,7 @@ if __name__ == "__main__":
 
     print("\n[Temporal Coding: demonstrating mu sensitivity]")
     for mu_val in [0.9999, 0.99, 0.7, 0.5]:
-        r = spikernel(s, t_shuffled, n=5, mu=mu_val, lam=0.7)
+        r = spikernel_2(s, t_shuffled, n=5, mu=mu_val, lam=0.7)
         print(f"  mu={mu_val}: K(s, s_reversed) = {r:.4f}")
 
     # FIX: use mu=0.7 for a meaningful temporal test
@@ -150,8 +150,8 @@ if __name__ == "__main__":
     t_recent_orig = np.array([[9,9,0,1,2,3,4],[9,9,1,2,3,4,5]])
     t_early_orig  = np.array([[0,1,2,3,4,9,9],[1,2,3,4,5,9,9]])
     print("\n[Recency: original sequences — artefact visible with correct lam=0.7]")
-    r_recent_fix = spikernel(s, t_recent_orig, n=5, mu=0.99, lam=0.7)
-    r_early_fix  = spikernel(s, t_early_orig,  n=5, mu=0.99, lam=0.7)
+    r_recent_fix = spikernel_2(s, t_recent_orig, n=5, mu=0.99, lam=0.7)
+    r_early_fix  = spikernel_2(s, t_early_orig,  n=5, mu=0.99, lam=0.7)
     print(f"  t_recent (pattern at END):   {r_recent_fix:.6f}")
     print(f"  t_early  (pattern at START): {r_early_fix:.6f}")
     print(f"  recent > early? {r_recent_fix > r_early_fix}  ← ✓ correct direction now")
@@ -194,8 +194,8 @@ if __name__ == "__main__":
     # 8. Symmetry Test
     # --------------------------------------------------
     t_small_diff = np.array([[0,1,2,3,5],[1,2,3,4,6]])
-    result_st = spikernel(s, t_small_diff, n=5, mu=0.99, lam=0.7)
-    result_ts = spikernel(t_small_diff, s, n=5, mu=0.99, lam=0.7)
+    result_st = spikernel_2(s, t_small_diff, n=5, mu=0.99, lam=0.7)
+    result_ts = spikernel_2(t_small_diff, s, n=5, mu=0.99, lam=0.7)
     print(f"\n=== Symmetry Test ===")
     print(f"K(s,t) = {result_st:.8f}")
     print(f"K(t,s) = {result_ts:.8f}")
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     print("\n=== Selectivity contrast (BUG 1 was: both rows identical) ===")
     t_noise = np.array([[0,2,1,4,3],[2,1,4,3,6]])
     for mu_val in [0.9999, 0.99, 0.7, 0.5, 0.3, 0.1]:
-        r = spikernel(s, t_noise, n=5, mu=mu_val, lam=0.7)
+        r = spikernel_2(s, t_noise, n=5, mu=mu_val, lam=0.7)
         print(f"  mu={mu_val:<6}: K = {r:.6f}")
         
 
