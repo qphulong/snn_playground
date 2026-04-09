@@ -3,3 +3,6 @@ output/
 __pycache__/
 nest-volume/
 datasets/
+papers_read/
+training/two_layers/vizs/
+training/two_layers/*.npz   
