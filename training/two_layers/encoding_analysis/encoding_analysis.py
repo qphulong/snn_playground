@@ -32,7 +32,7 @@ OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Put neuron indices you want to keep here.
 # Example: neurons = [10, 50, 123, 300, 450, 699]
 # If left empty [], all 700 neurons will be used.
-neurons = [100,200,300,400,500,600]          # ←←← EDIT THIS ARRAY MANUALLY
+neurons = []          # ←←← EDIT THIS ARRAY MANUALLY
 
 # ============================================================
 # Input Layer Hyperparameters
@@ -51,9 +51,9 @@ v_th_in     = 1.0
 # ============================================================
 
 SPIKERNEL_N_MAX = 5
-SPIKERNEL_LAM = 0.99
-SPIKERNEL_MU = 0.35
-SPIKERNEL_Q = 3
+SPIKERNEL_LAM = 0.999999
+SPIKERNEL_MU = 0.99
+SPIKERNEL_Q = 0.5
 SPIKERNEL_EPS = 1e-12
 
 # ============================================================
