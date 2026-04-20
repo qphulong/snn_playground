@@ -3,7 +3,7 @@
 # ============================================================
 
 # Number of training epochs
-epochs: 1
+epochs: 32
 
 # ============================================================
 # Recording options
@@ -11,39 +11,68 @@ epochs: 1
 
 # Weight evolution: list of [input_index, hidden_index] pairs to track over time.
 weights_evolution:
-  - [122, 373]
-  - [190, 292]
-  - [300, 300]
+  - [178, 201]
+  - [185, 153]
+  - [185, 201]
+  - [199, 402]
+  - [192, 463]
+  - [185, 207]
+  - [192, 153]
+  - [192, 207]
+  - [178, 153]
+  - [171, 201]
+  - [192, 201]
+  - [192, 402]
+  - [199, 463]
+  - [206, 402]
+  - [178, 207]
+  - [192, 410]
+  - [199, 50]
+  - [199, 58]
+  - [199, 51]
+  - [199, 410]
+  - [512, 87] # random
+  - [699, 342]
+  - [128, 615]
+  - [403, 221]
+  - [76, 588]
+  - [650, 14]
+  - [299, 467]
+  - [540, 390]
+  - [183, 702]
+  - [421, 265]
 
 # Membrane potential for input neurons.
 # Each entry is either:
 #   - a plain index:                0            → plot full duration
 #   - index + time window:  [0, [100, 200]]      → neuron 0 from 100ms to 200ms
 membrane_potential_input:
-  - 100
-  - 200
-  - 300
-  - 400
-  - 500
-  - 600
-  - 699
+  - 0
 
 # Membrane potential for hidden neurons (same syntax as above).
+# You can list the same neuron twice with different windows to get multiple plots.
+# Example: - 177 (full duration) and - [177,[2000,2100]] (time window 2000-2100 ms)
 membrane_potential_hidden:
-  - [100,[500,1000]]
-  - [200,[500,1000]]
-  - [300,[500,1000]]
-  - [400,[500,1000]]
-  - [500,[500,1000]]
-  - [600,[500,1000]]
-  - [699,[500,1000]]
-  - [100]
-  - [200]
-  - [300]
-  - [400]
-  - [500]
-  - [600]
-  - [699] 
+  - [201]
+  - [153]
+  - [402]
+  - [463]
+  - [207]
+  - [410]
+  - [50]
+  - [58]
+  - [51]
+  - [512] #rand
+  - [63]
+  - [299]
+  - [147]
+  - [386]
+  - [571]
+  - [205]
+  - [33]
+  - [498]
+  - [671]
+
 
 # Spike raster plot for input layer (all neurons, per sample).
 spike_raster_input: true
@@ -63,12 +92,42 @@ mean_firing_rate_hidden: true
 # ============================================================
 
 # Top-k weights to visualize after training
-top_k_weights_viz: 10
+top_k_weights_viz: 100
 
 # Which epochs to visualize samples from (empty = all epochs)
-visualize_epoch: [0]
-
+visualize_epoch: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+# visualize_epoch: [31]
 # Which sample indices to visualize (0-based, within selected epochs).
 # Applies to: membrane_potential and spike_raster plots.
 # null or empty list = visualize all recorded samples.
-visualize_samples: [397]
+visualize_samples: [9]
+
+# ============================================================
+# New visualization options
+# ============================================================
+
+# Hidden neuron indices for incoming weight visualization
+weights_per_neuron:
+  - 201
+  - 153
+  - 402
+  - 463
+  - 207
+  - 410
+  - 50
+  - 58
+  - 51
+  - 512 #rand
+  - 63
+  - 299
+  - 147
+  - 386
+  - 571
+  - 205
+  - 33
+  - 498
+  - 671
+
+
+# Track mean weight change (delta) over time for weight pairs
+track_weight_delta: true

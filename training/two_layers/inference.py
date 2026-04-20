@@ -20,7 +20,7 @@ from src.spikernel.spikernel import spikernel_normalized
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-WEIGHTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history_epoch_047.npz")
+WEIGHTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history_epoch_031.npz")
 INFER_DIR    = "datasets/vox1_single_person_nano_2/test"
 OUTPUT_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vizs")
 

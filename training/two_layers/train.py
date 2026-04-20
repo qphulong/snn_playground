@@ -63,7 +63,7 @@ NEED_W_SNAPSHOT    = bool(RECORD_WEIGHTS_EVOLUTION)
 # Find dataset
 # ============================================================
 # TODO: set the path
-wav_files = sorted(glob.glob("datasets/vox1_single_person_nano/dev/*.wav", recursive=True))
+wav_files = sorted(glob.glob("datasets/vox1_single_person_nano_2/dev/*.wav", recursive=True))
 print(f"Found {len(wav_files)} files in datasets/vox1_single_person_nano/dev/")
 
 
@@ -93,13 +93,13 @@ vth_jump     = 0.3
 # -- STDP --
 taupre      = 20 * ms
 taupost     = 20 * ms
-Apre_delta  =  0.005
-Apost_delta = -0.0055
+Apre_delta  =  0.0001
+Apost_delta = -0.00012
 
 # -- Synaptic weight bounds --
 wmax       = 1.0
 wmin       = 0.0
-W_INIT_SUM = 8
+W_INIT_SUM = 2
 
 # TODO: consider this
 # -- Weight initialization --
@@ -111,7 +111,7 @@ W_INIT_SIGMA     = N_IN / 5   # Gaussian bell width
 W_INIT_NOISE_STD = 0.005      # symmetry-breaking noise
 
 # -- Homeostatic normalisation --
-NORM_LIMIT = 8               # column weight-sum cap after each sample
+NORM_LIMIT = 2                # column weight-sum cap after each sample
 
 # -- Lateral inhibition --
 lat_inh = 1
@@ -314,8 +314,8 @@ for epoch_idx in range(EPOCHS):
         dapost/dt = -apost/taupost : 1 (event-driven)
         """
         # TODO: edit the update equation here
-        on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost, wmin, wmax)"
-        on_post = "apost += Apost_delta\nw = clip(w + apre, wmin, wmax)"
+        on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost*(w-wmin), wmin, wmax)"
+        on_post = "apost += Apost_delta\nw = clip(w + apre*(wmax-w), wmin, wmax)"
 
         S = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
         S.connect()
@@ -335,19 +335,20 @@ for epoch_idx in range(EPOCHS):
 
             # Step 1: find neurons that crossed threshold
             crossed = v > vth
-
+            K = 35
             if np.any(crossed):
-                # Step 2: among them, pick the one with lowest threshold
+                # Step 2: among them, pick the top k with lowest threshold
                 candidates = np.where(crossed)[0]
-                winner_index = candidates[np.argmin(vth[candidates])]
+                sorted_idx = candidates[np.argsort(vth[candidates])]
+                winners = sorted_idx[:K]
 
                 # Step 3: set winner flag
                 G_h.is_winner[:] = False
-                G_h.is_winner[winner_index] = True
+                G_h.is_winner[winners] = True
 
                 # Step 4: reset losers (those that crossed but are not winner)
-                losers = candidates[candidates != winner_index]
-                G_h.v[losers] = 0
+                losers = np.setdiff1d(candidates, winners)
+                G_h.v[losers] = 0.5
             else:
                 # no neuron fires
                 G_h.is_winner[:] = False
@@ -404,8 +405,8 @@ for epoch_idx in range(EPOCHS):
         # limit = vth_final[nrn] * NORM_MARGIN
         spiked_neurons = np.unique(np.array(hid_spike_mon.i))
         for nrn in spiked_neurons:
-            # limit = NORM_LIMIT
-            limit = vth_final[nrn] * 8
+            limit = NORM_LIMIT
+            # limit = vth_final[nrn] * 8
             wsum  = w_new[:, nrn].sum()
             if wsum > limit > 0:
                 w_new[:, nrn] *= limit / wsum
