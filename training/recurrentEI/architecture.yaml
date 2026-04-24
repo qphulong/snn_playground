@@ -35,21 +35,27 @@ neuron_groups:
     n: 700
     is_input: false
     equations: |
-      dv/dt = -v / (50*ms) : 1 (unless refractory)
-    threshold:  "v > 0.8"
-    reset:      "v = 0"
+      dv/dt   = -v   / (50*ms)          : 1 (unless refractory)
+      dvth/dt = (0.8 - vth) / (100*ms)  : 1
+    threshold:  "v > vth"
+    reset:      "v = 0; vth += 0.2"
     refractory: "2*ms"
     method:     euler
+    init:
+      vth: 0.8
 
   hidden_i:
     n: 150
     is_input: false
     equations: |
-      dv/dt = -v / (20*ms) : 1 (unless refractory)
-    threshold:  "v > 1.0"
-    reset:      "v = 0"
+      dv/dt   = -v   / (20*ms)          : 1 (unless refractory)
+      dvth/dt = (0.8 - vth) / (100*ms)  : 1
+    threshold:  "v > vth"
+    reset:      "v = 0; vth += 0.2"
     refractory: "2*ms"
     method:     euler
+    init:
+      vth: 0.8
 
 # ── Synapse groups ────────────────────────────────────────────
 # Name pattern: from_<src>_to_<dst>

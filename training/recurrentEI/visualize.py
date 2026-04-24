@@ -216,22 +216,28 @@ def plot_membrane_potential(
     threshold:  float | None,
     window_ms:  tuple[float, float] | None,
     out_path:   str,
+    vth:        np.ndarray | None = None,   # adaptive threshold trace (same shape as v)
 ):
     if window_ms is not None:
         t0, t1 = window_ms
         mask = (t_ms >= t0) & (t_ms <= t1)
         t_plot, v_plot = t_ms[mask], v[mask]
+        vth_plot = vth[mask] if vth is not None else None
     else:
         t_plot, v_plot = t_ms, v
+        vth_plot = vth
 
     fig, ax = plt.subplots(figsize=(11, 3))
     ax.plot(t_plot, v_plot, color=_color(group_name), lw=0.8, zorder=2, label="v")
 
-    if threshold is not None:
+    if vth_plot is not None:
+        ax.plot(t_plot, vth_plot, color="crimson", lw=1.0, ls="--",
+                zorder=3, label="threshold (adaptive)")
+    elif threshold is not None:
         ax.axhline(threshold, color="crimson", lw=1.0, ls="--",
                    label=f"threshold ({threshold:.2f})", zorder=3)
-        ax.legend(fontsize=8, loc="upper right")
 
+    ax.legend(fontsize=8, loc="upper right")
     ax.set_xlabel("Time (ms)")
     ax.set_ylabel("v (a.u.)")
     win_str = (f"  [{window_ms[0]:.0f}–{window_ms[1]:.0f} ms]"
@@ -440,8 +446,11 @@ def visualize_epoch(
             indices  = np.asarray(data[ki], dtype=int)
             win_rows = np.asarray(data[kw], dtype=float)   # (n_monitored, 3)
 
-            v_sample = _get_sample(v_all, sidx)   # (n_monitored, T)
-            t_sample = _get_sample(t_all, sidx)   # (T,)
+            v_sample   = _get_sample(v_all, sidx)   # (n_monitored, T)
+            t_sample   = _get_sample(t_all, sidx)   # (T,)
+            kvth       = f"vmon_{gname}_vth_all"
+            vth_all    = data.get(kvth)
+            vth_sample = _get_sample(vth_all, sidx) if vth_all is not None else None
 
             for row_k, nid in enumerate(indices):
                 if row_k >= v_sample.shape[0]:
@@ -462,6 +471,7 @@ def visualize_epoch(
                         sdir,
                         f"membrane_potential_{_safe_name(gname)}_neuron_{nid}.png",
                     ),
+                    vth        = vth_sample[row_k] if vth_sample is not None else None,
                 )
 
         # ── weight evolution — one file per tracked pair ──────────────────────

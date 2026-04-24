@@ -176,6 +176,13 @@ class Recorder:
             if idx:
                 self._vmon_cfg[gname] = (idx, win)
 
+        # Groups whose equations contain an adaptive threshold variable vth
+        self._adaptive_thresh_groups: set[str] = {
+            gname
+            for gname, gcfg in arch.get("neuron_groups", {}).items()
+            if "dvth/dt" in gcfg.get("equations", "")
+        }
+
         # Weight evolution: synapse_name → list of [src_id, dst_id]
         self._we_cfg: dict[str, list] = {}
         for sname, pairs in (cfg.get("weights_evolution") or {}).items():
@@ -199,6 +206,8 @@ class Recorder:
             self.ep[f"vmon_{gname}_t"] = []
             self.ep[f"vmon_{gname}_indices"] = idx
             self.ep[f"vmon_{gname}_windows"] = win
+            if gname in self._adaptive_thresh_groups:
+                self.ep[f"vmon_{gname}_vth"] = []
 
         # weight evolution
         for sname, pairs in self._we_cfg.items():
@@ -242,7 +251,8 @@ class Recorder:
         # ── Membrane monitors ─────────────────────────────────────────────────
         for gname, (idx, _) in self._vmon_cfg.items():
             if gname in net.groups:
-                ops.vmon[gname] = StateMonitor(net.groups[gname], "v", record=idx)
+                vars_to_record = ["v", "vth"] if gname in self._adaptive_thresh_groups else "v"
+                ops.vmon[gname] = StateMonitor(net.groups[gname], vars_to_record, record=idx)
 
         # ── Weight snapshot network_operations ───────────────────────────────
         for sname, pairs in self._we_cfg.items():
@@ -336,6 +346,8 @@ class Recorder:
         for gname, vm in ops.vmon.items():
             self.ep[f"vmon_{gname}_v"].append(np.array(vm.v,      dtype=np.float32))
             self.ep[f"vmon_{gname}_t"].append(np.array(vm.t / ms, dtype=np.float32))
+            if gname in self._adaptive_thresh_groups:
+                self.ep[f"vmon_{gname}_vth"].append(np.array(vm.vth, dtype=np.float32))
 
         # ── Weight snapshot: per-sample arrays ───────────────────────────────
         for sname in self._we_cfg:
@@ -414,6 +426,8 @@ class Recorder:
             arrs[f"vmon_{gname}_v_all"]     = _pack_ragged(self.ep[key_v])
             arrs[f"vmon_{gname}_t_all"]     = _pack_ragged(self.ep[f"vmon_{gname}_t"])
             arrs[f"vmon_{gname}_n_samples"] = np.int32(len(self.ep[key_v]))
+            if gname in self._adaptive_thresh_groups:
+                arrs[f"vmon_{gname}_vth_all"] = _pack_ragged(self.ep[f"vmon_{gname}_vth"])
             win_rows = []
             for nid, w in zip(idx, windows):
                 win_rows.append(

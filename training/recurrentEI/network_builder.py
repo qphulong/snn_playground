@@ -193,6 +193,8 @@ def build_network(
             kwargs["namespace"] = {"I_ext": I_ext}
 
         grp = NeuronGroup(n, eqs, **kwargs)
+        for var, val in (gcfg.get("init") or {}).items():
+            setattr(grp, var, float(val))
         net.groups[gname] = grp
 
     # ── Build Synapses ────────────────────────────────────────────────────────
