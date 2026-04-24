@@ -1,0 +1,151 @@
+# ============================================================
+# architecture.yaml
+# Declarative SNN architecture definition.
+#
+# Rules:
+#   - At least one neuron group must have is_input: true.
+#     That group receives the external TimedArray current.
+#   - Synapse group names MUST follow the pattern:
+#       from_<source_group_name>_to_<destination_group_name>
+#   - Brian2 equations are written inline; numeric constants
+#     are injected at build-time so units resolve correctly.
+#   - Refractory accepts any Brian2-parseable string, e.g. "2*ms".
+# ============================================================
+
+# ── Global simulation settings ────────────────────────────────
+simulation:
+  dt_ms: 1.0          # timestep in ms
+  random_seed: 42
+
+# ── Neuron groups ─────────────────────────────────────────────
+neuron_groups:
+
+  input_group:
+    n: 700
+    is_input: true    # receives external TimedArray current I_ext(t, i)
+    equations: |
+      dv/dt  = (-v - a) / (40*ms) + I_ext(t, i) / (1*ms) : 1 (unless refractory)
+      da/dt  = -a / (20*ms)                               : 1
+    threshold:  "v > 1.0"
+    reset:      "v = 0; a += 0.25"
+    refractory: "2*ms"
+    method:     euler
+
+  hidden_e:
+    n: 700
+    is_input: false
+    equations: |
+      dv/dt = -v / (50*ms) : 1 (unless refractory)
+    threshold:  "v > 0.8"
+    reset:      "v = 0"
+    refractory: "2*ms"
+    method:     euler
+
+  hidden_i:
+    n: 150
+    is_input: false
+    equations: |
+      dv/dt = -v / (20*ms) : 1 (unless refractory)
+    threshold:  "v > 1.0"
+    reset:      "v = 0"
+    refractory: "2*ms"
+    method:     euler
+
+# ── Synapse groups ────────────────────────────────────────────
+# Name pattern: from_<src>_to_<dst>
+# effect: excitatory | inhibitory   (controls sign of v_post update)
+# plasticity: stdp | static | none
+synapse_groups:
+
+  from_input_group_to_hidden_e:
+    effect: excitatory
+    plasticity: stdp
+
+    stdp:
+      model: |
+        w         : 1
+        dapre/dt  = -apre  / (20*ms) : 1 (event-driven)
+        dapost/dt = -apost / (20*ms) : 1 (event-driven)
+      on_pre: |
+        v_post += w
+        apre   += 0.0001
+        w       = clip(w + apost * (w - 0.0), 0.0, 1.0)
+      on_post: |
+        apost += -0.00012
+        w      = clip(w + apre  * (1.0 - w), 0.0, 1.0)
+
+    weight_init:
+      method:     circular_gaussian
+      sigma_frac: 0.2
+      init_sum:   2.0
+      noise_std:  0.005
+
+    norm:
+      limit:    2.0        # L1 norm per destination neuron column
+      on_group: dst        # normalise over destination neurons that spiked
+
+    weight_bounds:
+      wmin: 0.0
+      wmax: 1.0
+
+  from_hidden_e_to_hidden_i:
+    effect: excitatory
+    plasticity: stdp
+
+    stdp:
+      model: |
+        w         : 1
+        dapre/dt  = -apre  / (20*ms) : 1 (event-driven)
+        dapost/dt = -apost / (20*ms) : 1 (event-driven)
+      on_pre: |
+        v_post += w
+        apre   += 0.0001
+        w       = clip(w + apost * (w - 0.0), 0.0, 1.0)
+      on_post: |
+        apost += -0.00012
+        w      = clip(w + apre  * (1.0 - w), 0.0, 1.0)
+
+    weight_init:
+      method:     circular_gaussian
+      sigma_frac: 0.2
+      init_sum:   2.0
+      noise_std:  0.005
+
+    norm:
+      limit:    2.0
+      on_group: dst
+
+    weight_bounds:
+      wmin: 0.0
+      wmax: 1.0
+
+  from_hidden_i_to_hidden_e:
+    effect: inhibitory     # v_post -= w
+    plasticity: stdp
+
+    stdp:
+      model: |
+        w         : 1
+        dapre/dt  = -apre  / (20*ms) : 1 (event-driven)
+        dapost/dt = -apost / (20*ms) : 1 (event-driven)
+      on_pre: |
+        v_post -= w
+        apre   += 0.0001
+        w       = clip(w + apost * (w - 0.0), 0.0, 1.0)
+      on_post: |
+        apost += -0.00012
+        w      = clip(w + apre  * (1.0 - w), 0.0, 1.0)
+
+    weight_init:
+      method:     circular_gaussian
+      sigma_frac: 0.2
+      init_sum:   0.5
+      noise_std:  0.005
+
+    norm:
+      limit:    0.5
+      on_group: dst
+
+    weight_bounds:
+      wmin: 0.0
+      wmax: 1.0

@@ -1,0 +1,79 @@
+# ============================================================
+# record_config.yaml
+# Recording configuration.  All group/synapse names must match
+# those defined in architecture.yaml.
+#
+# spike_raster      : list of group names  (bool flag per group)
+# mean_firing_rate  : list of group names
+# membrane_potential: map of group_name → list of neuron entries
+#                     each entry: neuron_id  OR  [neuron_id, [t0_ms, t1_ms]]
+# weights_evolution : map of synapse_name → list of [src_id, dst_id] pairs
+# final_weights     : list of synapse names
+# top_k_weights     : map of synapse_name → k   (logged to file after training)
+# ============================================================
+
+# ── Training ──────────────────────────────────────────────────
+epochs: 1
+
+# ── Visualization selection ───────────────────────────────────
+# Which epochs to visualize (0-indexed). [] means all recorded epochs.
+epochs_to_visualize: [0]
+# Which samples to visualize within each epoch (0-indexed). [] means all.
+samples_to_visualize: [0, 1]
+
+# ── Spike rasters ─────────────────────────────────────────────
+spike_raster:
+  - input_group
+  - hidden_e
+  - hidden_i
+
+# ── Mean firing rates (same raw spike data, computed in viz.py) ──
+mean_firing_rate:
+  - hidden_e
+  - hidden_i
+
+# ── Membrane potential ────────────────────────────────────────
+# Format per entry:
+#   - neuron_id                      →  record full duration
+#   - [neuron_id, [t0_ms, t1_ms]]    →  record only that window
+membrane_potential:
+  hidden_e:
+    - 0
+    - [42, [0, 500]]
+  hidden_i:
+    - 0
+
+# ── Weight evolution snapshots ────────────────────────────────
+# List of [src_neuron_id, dst_neuron_id] pairs to track over time.
+weights_evolution:
+  from_input_group_to_hidden_e:
+    - [0,   0]
+    - [100, 50]
+  from_hidden_e_to_hidden_i:
+    - [0, 0]
+  from_hidden_i_to_hidden_e:
+    - [0, 0]
+
+# ── Final weight matrices (full N_src × N_dst saved per epoch) ──
+final_weights:
+  - from_input_group_to_hidden_e
+  - from_hidden_e_to_hidden_i
+  - from_hidden_i_to_hidden_e
+
+# ── Top-k weight logging (written to vizs/*.log after training) ──
+top_k_weights:
+  from_input_group_to_hidden_e: 50
+  from_hidden_e_to_hidden_i:    50
+  from_hidden_i_to_hidden_e:    50
+
+# ── Weight snapshot interval ──────────────────────────────────
+snapshot_interval_ms: 500
+
+# ── Weights per neuron (histogram of incoming weights to a dst neuron) ────────
+# Format: synapse_name: [dst_neuron_id, ...]
+# Plots a bar chart: x = src neuron index, y = weight value.
+# Uses the final weight matrix of the last selected sample in each epoch.
+weights_per_neuron:
+  from_input_group_to_hidden_e: [100, 200]
+  from_hidden_e_to_hidden_i:    [0]
+  from_hidden_i_to_hidden_e:    [0]
