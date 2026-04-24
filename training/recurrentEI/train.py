@@ -159,7 +159,7 @@ for epoch_idx in range(EPOCHS):
         start_scope()
         defaultclock.dt = DT_SIM
 
-        net = build_network(arch, I_arr)
+        net = build_network(arch, I_arr.T)  # build_network expects (T, N)
 
         # ── 3. Carry weights from previous sample ─────────────────────────────
         inject_weights(net, w_current)

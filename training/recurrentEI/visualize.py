@@ -40,9 +40,9 @@ import yaml
 
 # ── colour palette ─────────────────────────────────────────────────────────────
 _PALETTE = {
-    "input_group": "#4C9BE8",
-    "hidden_e":    "#E8834C",
-    "hidden_i":    "#6DBE6D",
+    "input_group": "steelblue",
+    "hidden_e":    "mediumseagreen",
+    "hidden_i":    "darkorange",
     "_default":    "#9B59B6",
 }
 _SYNAPSE_COLORS = [
@@ -53,11 +53,11 @@ _SYNAPSE_COLORS = [
 matplotlib.rcParams.update({
     "figure.dpi":         150,
     "font.size":          10,
-    "axes.titlesize":     11,
+    "axes.titlesize":     12,
     "axes.labelsize":     10,
     "axes.spines.top":    False,
     "axes.spines.right":  False,
-    "lines.linewidth":    1.2,
+    "lines.linewidth":    1.5,
     "savefig.bbox":       "tight",
     "savefig.pad_inches": 0.05,
 })
@@ -155,20 +155,22 @@ def plot_spike_raster(
     scale = (audio_dur_ms / sim_dur_ms) if sim_dur_ms > 0 else 1.0
     spk_t_audio_ms = spk_t_sim_ms * scale
 
-    fig, ax = plt.subplots(figsize=(10, 3.5))
+    fig, ax = plt.subplots(figsize=(12, 5))
     if len(spk_t_audio_ms) > 0:
-        ax.scatter(spk_t_audio_ms, spk_i, s=0.8, c=_color(group_name),
+        ax.scatter(spk_t_audio_ms, spk_i, s=0.5, c=_color(group_name),
                    linewidths=0, rasterized=True)
 
-    ax.set_xlim(0, audio_dur_ms if audio_dur_ms > 0 else 1.0)
-    ax.set_ylim(-0.5, n_neurons - 0.5)
-    ax.set_xlabel("Time (ms, audio)")
+    ax.set_xlim(left=0, right=audio_dur_ms if audio_dur_ms > 0 else 1.0)
+    ax.set_ylim(bottom=0, top=n_neurons - 1)
+    ax.set_xlabel("Time (ms)")
     ax.set_ylabel("Neuron index")
     ax.set_title(
-        f"Spike raster — {group_name}  "
-        f"({len(spk_t_audio_ms):,} spikes / {audio_dur_ms:.0f} ms)"
+        f"Spike Raster — {group_name}  "
+        f"({len(spk_t_audio_ms):,} spikes / {audio_dur_ms:.0f} ms)",
+        fontsize=12, fontweight="bold",
     )
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True, nbins=6))
+    ax.grid(True, alpha=0.2)
     fig.tight_layout()
     _savefig(fig, out_path)
 
@@ -187,16 +189,19 @@ def plot_mean_firing_rate(
     mean_r      = rates.mean()
     active_frac = (rates > 0).mean() * 100
 
-    fig, ax = plt.subplots(figsize=(10, 3.5))
+    fig, ax = plt.subplots(figsize=(12, 4))
     ax.bar(np.arange(n_neurons), rates, width=1.0,
            color=_color(group_name), linewidth=0, alpha=0.85)
     ax.set_xlabel("Neuron index")
-    ax.set_ylabel("Firing rate (Hz)")
+    ax.set_ylabel("Mean rate (Hz)")
     ax.set_xlim(-0.5, n_neurons - 0.5)
+    ax.set_ylim(bottom=0)
     ax.set_title(
-        f"Mean firing rate — {group_name}  |  "
-        f"mean={mean_r:.2f} Hz  active={active_frac:.1f}%"
+        f"Mean Firing Rate — {group_name}  |  "
+        f"mean={mean_r:.2f} Hz  active={active_frac:.1f}%",
+        fontsize=12, fontweight="bold",
     )
+    ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     _savefig(fig, out_path)
 
@@ -219,21 +224,23 @@ def plot_membrane_potential(
     else:
         t_plot, v_plot = t_ms, v
 
-    fig, ax = plt.subplots(figsize=(10, 3))
-    ax.plot(t_plot, v_plot, color=_color(group_name), lw=0.9)
+    fig, ax = plt.subplots(figsize=(11, 3))
+    ax.plot(t_plot, v_plot, color=_color(group_name), lw=0.8, zorder=2, label="v")
 
     if threshold is not None:
-        ax.axhline(threshold, color="#E74C3C", lw=0.8, ls="--",
-                   label=f"threshold = {threshold:.2f}")
-        ax.legend(fontsize=8, frameon=False)
+        ax.axhline(threshold, color="crimson", lw=1.0, ls="--",
+                   label=f"threshold ({threshold:.2f})", zorder=3)
+        ax.legend(fontsize=8, loc="upper right")
 
     ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Membrane potential (a.u.)")
-    win_str = (f"  [{window_ms[0]:.0f}-{window_ms[1]:.0f} ms]"
+    ax.set_ylabel("v (a.u.)")
+    win_str = (f"  [{window_ms[0]:.0f}–{window_ms[1]:.0f} ms]"
                if window_ms else "")
     ax.set_title(
-        f"Membrane potential — {group_name} / neuron {neuron_id}{win_str}"
+        f"Membrane Potential — {group_name} / Neuron {neuron_id}{win_str}",
+        fontsize=12, fontweight="bold",
     )
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     _savefig(fig, out_path)
 
@@ -251,20 +258,22 @@ def plot_weight_evolution_pair(
     color:      str,
     out_path:   str,
 ):
-    fig, ax = plt.subplots(figsize=(10, 3))
-    ax.plot(times_ms, values, color=color, lw=1.1)
+    fig, ax = plt.subplots(figsize=(11, 3))
+    ax.plot(times_ms, values, color=color, lw=1.5)
     ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Weight value")
-    ax.set_ylim(0, None)
+    ax.set_ylabel("Weight")
+    ax.set_ylim(0, 1)
     ax.set_title(
-        f"Weight evolution — {src_group}[{src_id}] -> {dst_group}[{dst_id}]  "
-        f"[sample {sample_idx}]"
+        f"Weight Evolution — {src_group}[{src_id}] → {dst_group}[{dst_id}]  "
+        f"[sample {sample_idx}]",
+        fontsize=12, fontweight="bold",
     )
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     _savefig(fig, out_path)
 
 
-# ── 5. Weights per neuron — histogram (weight value on x, count on y) ─────────
+# ── 5. Weights per neuron — bar chart + histogram ─────────────────────────────
 
 def plot_weights_per_neuron(
     W_col:     np.ndarray,   # (n_src,) incoming weights to one dst neuron
@@ -273,21 +282,82 @@ def plot_weights_per_neuron(
     dst_group: str,
     out_path:  str,
 ):
+    import matplotlib.gridspec as gridspec
+
     w_pos = W_col[W_col > 1e-9]
     w_sum = W_col.sum()
     w_max = W_col.max()
     w_nnz = len(w_pos)
     n_src = len(W_col)
 
-    fig, ax = plt.subplots(figsize=(7, 3.5))
-    if len(w_pos) > 0:
-        ax.hist(w_pos, bins=50, color=_color(src_group), alpha=0.85, edgecolor="none")
-    ax.set_xlabel("Weight value")
-    ax.set_ylabel("Count")
-    ax.set_title(
-        f"Incoming weight distribution — {src_group} -> {dst_group}[{dst_id}]\n"
-        f"sum={w_sum:.3f}  max={w_max:.4f}  nnz={w_nnz}/{n_src}"
+    fig = plt.figure(figsize=(14, 5))
+    gs  = gridspec.GridSpec(1, 2, width_ratios=[2, 1], figure=fig)
+    fig.suptitle(
+        f"Incoming Weights — {src_group} → {dst_group}[{dst_id}]  |  "
+        f"sum={w_sum:.3f}  max={w_max:.4f}  nnz={w_nnz}/{n_src}",
+        fontsize=13, fontweight="bold",
     )
+
+    ax_bar = fig.add_subplot(gs[0])
+    ax_bar.bar(np.arange(n_src), W_col, width=0.8,
+               color=_color(src_group), linewidth=0, alpha=0.85)
+    ax_bar.set_xlabel("Input neuron index")
+    ax_bar.set_ylabel("Weight magnitude")
+    ax_bar.set_xlim(-0.5, n_src - 0.5)
+    ax_bar.set_ylim(bottom=0)
+    ax_bar.grid(True, axis="y", alpha=0.3)
+
+    ax_hist = fig.add_subplot(gs[1])
+    if len(w_pos) > 0:
+        ax_hist.hist(w_pos, bins=40, color=_color(src_group),
+                     edgecolor="none", density=True, alpha=0.85)
+    ax_hist.set_xlabel("Weight value")
+    ax_hist.set_ylabel("Density")
+    ax_hist.set_title("Distribution\n(non-zero)", fontsize=10)
+    ax_hist.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    _savefig(fig, out_path)
+
+
+# ── 6. Weight matrix — heatmap + histogram ────────────────────────────────────
+
+def plot_weight_matrix(
+    W:        np.ndarray,   # (N_src, N_dst)
+    title:    str,
+    out_path: str,
+):
+    import matplotlib.gridspec as gridspec
+
+    fig = plt.figure(figsize=(13, 5))
+    gs  = gridspec.GridSpec(1, 2, width_ratios=[3, 1], figure=fig)
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+
+    ax_heat = fig.add_subplot(gs[0])
+    im = ax_heat.imshow(
+        W,
+        aspect="auto",
+        interpolation="nearest",
+        cmap="viridis",
+        vmin=0,
+        vmax=W.max() if W.max() > 0 else 1,
+        origin="lower",
+    )
+    ax_heat.set_xlabel("Hidden neuron index")
+    ax_heat.set_ylabel("Input neuron index")
+    plt.colorbar(im, ax=ax_heat, label="Weight")
+
+    ax_hist = fig.add_subplot(gs[1])
+    w_flat = W.flatten()
+    w_pos  = w_flat[w_flat > 1e-9]
+    if len(w_pos) > 0:
+        ax_hist.hist(w_pos, bins=60, color="steelblue",
+                     edgecolor="none", density=True, alpha=0.85)
+    ax_hist.set_xlabel("Weight value")
+    ax_hist.set_ylabel("Density")
+    ax_hist.set_title("Distribution\n(non-zero)", fontsize=10)
+    ax_hist.grid(True, alpha=0.3)
+
     fig.tight_layout()
     _savefig(fig, out_path)
 
@@ -460,6 +530,25 @@ def visualize_epoch(
                     dst_group = dst_grp,
                     out_path  = os.path.join(sdir, fname),
                 )
+
+    # ── final weight matrices (one per epoch, outside the sample loop) ────────
+    for sname in (rec_cfg.get("final_weights") or []):
+        key_f = f"w_{sname}_final"
+        if key_f not in data:
+            continue
+        W_final          = np.asarray(data[key_f])
+        src_grp, dst_grp = _src_dst(sname)
+        epoch_out        = os.path.join(viz_root, f"epoch_{epoch_idx:03d}")
+        os.makedirs(epoch_out, exist_ok=True)
+        plot_weight_matrix(
+            W        = W_final,
+            title    = (f"Final Weight Matrix — {src_grp} → {dst_grp}  "
+                        f"(epoch {epoch_idx})"),
+            out_path = os.path.join(
+                epoch_out,
+                f"final_weight_matrix_{_safe_name(sname)}.png",
+            ),
+        )
 
 
 # ============================================================
