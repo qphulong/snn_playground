@@ -143,18 +143,22 @@ class Recorder:
                 mon["we_snap_times"]    = []
                 mon["we_snap_values"]   = [[] for _ in evolution_pairs]
 
-                _entry    = entry
-                _interval = self._snapshot_interval
+                # Brian2 network_operation only accepts (t) or () — no extra args.
+                # Capture entry via a factory function to avoid the late-binding
+                # closure problem when multiple synapse groups are registered.
+                def _make_snap_op(e, interval):
+                    @network_operation(dt=interval)
+                    def _snap(t):
+                        m     = e["mon"]
+                        t_ms  = float(t / ms)
+                        w_arr = np.array(e["syn"].w)
+                        m["we_snap_times"].append(t_ms)
+                        for k, fidx in enumerate(m["we_pair_flat_idx"]):
+                            val = float(w_arr[fidx]) if fidx is not None else float("nan")
+                            m["we_snap_values"][k].append(val)
+                    return _snap
 
-                @network_operation(dt=_interval)
-                def _snap(t, _e=_entry):
-                    m     = _e["mon"]
-                    t_ms  = float(t / ms)
-                    w_arr = np.array(_e["syn"].w)
-                    m["we_snap_times"].append(t_ms)
-                    for k, fidx in enumerate(m["we_pair_flat_idx"]):
-                        val = float(w_arr[fidx]) if fidx is not None else float("nan")
-                        m["we_snap_values"][k].append(val)
+                _snap = _make_snap_op(entry, self._snapshot_interval)
 
                 mon["we_snap_op"] = _snap
                 self._net.add(_snap)

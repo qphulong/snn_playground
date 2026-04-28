@@ -15,8 +15,8 @@ snapshot_interval_ms: 500
 groups:
 
   input:
-    spike_raster:       false
-    mean_firing_rate:   false
+    spike_raster:       true
+    mean_firing_rate:   true
     membrane_potential: []          # list of neuron indices, or [idx, [t0_ms, t1_ms]]
     membrane_potential_variables: ["v"]
 
@@ -24,8 +24,8 @@ groups:
     spike_raster:       true
     mean_firing_rate:   true
     membrane_potential:             # monitor neurons 0 and 350 with a time window
-      - [0,   [0, 500]]
-      - [350, [0, 500]]
+      - [0  ]
+      - [350]
     membrane_potential_variables: ["v", "vth", "is_winner"]
 
   # ── Template for a new group ──────────────────────────────────────────────
@@ -59,3 +59,7 @@ synapses:
   #     - [0, 0]
   #     - [50, 10]
   #   final_weights_per_sample: false
+
+# ── Visualize configs ────────────────────────────────────────────────────────────
+visualize_samples: [8,9]
+visualize_epoch: [0]
