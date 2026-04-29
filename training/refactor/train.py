@@ -113,9 +113,8 @@ init_weights = {"in->hid": w_ih.copy()}
 defaultclock.dt = DT_SIM
 
 # ── Input neurons ──────────────────────────────────────────────────────────────
-# TimedArray is replaced per-sample by patching G_in.namespace["I_timed"].
-# t_start is updated before each net.run() so that I_timed is indexed from 0
-# relative to the current sample start, not the global clock.
+# net.store/restore resets the Brian2 clock to 0 before every sample, so
+# I_timed(t, i) always indexes from the beginning of the array.
 # Do not call start_scope() or rebuild the network inside the sample loop.
 _dummy_I = np.zeros((1, N_IN), dtype=float)
 I_timed  = TimedArray(_dummy_I, dt=DT_SIM)
@@ -223,6 +222,14 @@ recorder.track_synapses("in->hid", S_ih, src_ih, tgt_ih)
 
 recorder.build()   # attaches all Brian2 monitors — call once, after all registrations
 
+# Snapshot the clean initial state (clock=0, v=0, a=0, vth=vth_init,
+# not_refractory=True, empty monitors).  net.restore('init') before every
+# sample brings the network back to this state, which is the only correct
+# way to reset all Brian2 internal state (including refractory bookkeeping)
+# without rebuilding the network.
+G_h.vth = vth_init   # default Brian2 init is 0; set before store
+net.store('init')
+
 
 # ============================================================
 # Training loop
@@ -256,24 +263,26 @@ for epoch_idx in range(EPOCHS):
 
         duration_s = float(T) * float(DT_SIM)
 
-        # ── Feed new audio input (no network rebuild) ──────────────────────────
+        # ── Reset to clean state, then inject this sample's data ──────────────
+        # restore resets: clock→0, v, a, vth, is_winner, apre, apost,
+        #                 not_refractory, and all monitor buffers.
+        net.restore('init')
+
         G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
-        G_in.namespace["t_start"] = defaultclock.t
 
-        # ── Reset neuron state — keep weights ──────────────────────────────────
-        G_in.v        = 0
-        G_in.a        = 0
-        G_h.v         = 0
-        G_h.vth       = vth_init
-        G_h.is_winner = False
-
-        S_ih.w     = w_ih[src_ih, tgt_ih]
+        # Weights survive across samples — override the restored initial weights.
+        S_ih.w    = w_ih[src_ih, tgt_ih]
         S_ih.apre  = 0
         S_ih.apost = 0
         # TO ADD A NEW SYNAPSE GROUP reset:
         # S_ho.w     = w_ho[src_ho, tgt_ho]
         # S_ho.apre  = 0
         # S_ho.apost = 0
+
+        # Recorder tracks elapsed time in Python; since restore resets the
+        # Brian2 clock to 0, spike times in the monitor are always [0, T] ms.
+        # Reset _elapsed_ms so start_ms = 0 and the slice arithmetic is correct.
+        recorder._elapsed_ms = 0.0
 
         # ── Record: before ─────────────────────────────────────────────────────
         recorder.before_sample(sample_idx)

@@ -13,13 +13,13 @@
 # ============================================================
 
 # ── Training ──────────────────────────────────────────────────
-epochs: 1
+epochs: 16
 
 # ── Visualization selection ───────────────────────────────────
 # Which epochs to visualize (0-indexed). [] means all recorded epochs.
-epochs_to_visualize: [0]
+epochs_to_visualize: [0,2,4,6,8,10,11,12,13,14,15]
 # Which samples to visualize within each epoch (0-indexed). [] means all.
-samples_to_visualize: [0, 1]
+samples_to_visualize: [9]
 
 # ── Spike rasters ─────────────────────────────────────────────
 spike_raster:
@@ -29,6 +29,7 @@ spike_raster:
 
 # ── Mean firing rates (same raw spike data, computed in viz.py) ──
 mean_firing_rate:
+  - input_group
   - hidden_e
   - hidden_i
 
@@ -37,22 +38,47 @@ mean_firing_rate:
 #   - neuron_id                      →  record full duration
 #   - [neuron_id, [t0_ms, t1_ms]]    →  record only that window
 membrane_potential:
+  input_group:
+    - 200
+    - 300
+    - 400
+    - 227
   hidden_e:
-    - 0
-    - [42, [0, 500]]
+    - 16
+    - 3
+    - 100
+    - 125
+    - 150
+    - 175
+    - 200
+    - 225
+    - 250
+    - 275
+    - 300
+    - 325
+    - 350
+    - 375
+    - 400
   hidden_i:
-    - 0
+    - 141
+    - 142
+    - 75
 
 # ── Weight evolution snapshots ────────────────────────────────
 # List of [src_neuron_id, dst_neuron_id] pairs to track over time.
 weights_evolution:
   from_input_group_to_hidden_e:
-    - [0,   0]
-    - [100, 50]
+    - [227, 573]
+    - [227, 585]
+    - [227, 580]
   from_hidden_e_to_hidden_i:
-    - [0, 0]
+    - [588, 141]
+    - [588, 142]
+    - [588, 75]
   from_hidden_i_to_hidden_e:
-    - [0, 0]
+    - [4,16]
+    - [5,16]
+    - [6,16]
 
 # ── Final weight matrices (full N_src × N_dst saved per epoch) ──
 final_weights:
@@ -74,6 +100,6 @@ snapshot_interval_ms: 500
 # Plots a bar chart: x = src neuron index, y = weight value.
 # Uses the final weight matrix of the last selected sample in each epoch.
 weights_per_neuron:
-  from_input_group_to_hidden_e: [100, 200]
-  from_hidden_e_to_hidden_i:    [0]
-  from_hidden_i_to_hidden_e:    [0]
+  from_input_group_to_hidden_e: [573,585,580]
+  from_hidden_e_to_hidden_i:    [141,142,75]
+  from_hidden_i_to_hidden_e:    [16,3,100]
