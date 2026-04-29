@@ -210,7 +210,7 @@ net = Network(G_in, G_h, S_ih, lat, determine_winner)
 # That is the only change needed in this file when extending the architecture.
 # ============================================================
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record_config.yaml")
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record_and_visualize_config.yaml")
 recorder = Recorder(CONFIG_PATH, net)
 
 recorder.track_group("input",  G_in)

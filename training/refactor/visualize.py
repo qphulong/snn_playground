@@ -31,13 +31,13 @@ import yaml
 # ── resolve paths ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-cfg_path   = os.path.join(SCRIPT_DIR, "record_config.yaml")
+cfg_path   = os.path.join(SCRIPT_DIR, "record_and_visualize_config.yaml")
 
 # ── load config ───────────────────────────────────────────────────────────────
 
 visualize_samples    = None
 visualize_epoch      = []
-weights_per_neuron   = None
+weights_per_neuron   = {}   # {synapse_name: [neuron_ids]}
 track_weight_delta   = False
 group_cfg            = {}
 synapse_cfg          = {}
@@ -45,12 +45,14 @@ synapse_cfg          = {}
 if os.path.exists(cfg_path):
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
-    visualize_samples  = cfg.get("visualize_samples",  None)
-    visualize_epoch    = cfg.get("visualize_epoch",    [])
-    weights_per_neuron = cfg.get("weights_per_neuron", None)
-    track_weight_delta = cfg.get("track_weight_delta", False)
-    group_cfg          = cfg.get("groups",   {}) or {}
-    synapse_cfg        = cfg.get("synapses", {}) or {}
+    # Support both the new split format and the legacy flat format.
+    viz_cfg = cfg.get("visualize", cfg)
+    visualize_samples  = viz_cfg.get("visualize_samples",  None)
+    visualize_epoch    = viz_cfg.get("visualize_epoch",    [])
+    weights_per_neuron = viz_cfg.get("weights_per_neuron", {}) or {}
+    track_weight_delta = viz_cfg.get("track_weight_delta", False)
+    group_cfg          = viz_cfg.get("groups",   {}) or {}
+    synapse_cfg        = viz_cfg.get("synapses", {}) or {}
 
 # ── find epoch files ──────────────────────────────────────────────────────────
 
@@ -443,23 +445,24 @@ def _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir):
 
 
 def _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir):
-    if not weights_per_neuron:
+    # weights_per_neuron is {synapse_name: [post-synaptic neuron ids]}
+    neuron_ids = weights_per_neuron.get(name, [])
+    if not neuron_ids:
         return
     if not (_has(keys, name, "weight_per_sample") and
             _has(keys, name, "weight_n_samples")):
         return
     wm_per_sample = _get(data, name, "weight_per_sample")
     n_total       = int(_get(data, name, "weight_n_samples"))
-    pfx           = _pfx(name)
 
     for s in _sample_indices(n_total):
         W = wm_per_sample[s]   # (N_pre, N_post)
 
-        for nid in weights_per_neuron:
+        for nid in neuron_ids:
             nid = int(nid)
             if nid >= W.shape[1]:
                 continue
-            weights = W[:, nid]
+            weights = W[:, nid]   # incoming weights for this post-synaptic neuron
 
             fig = plt.figure(figsize=(14, 5))
             gs  = gridspec.GridSpec(1, 2, width_ratios=[2, 1], figure=fig)
@@ -468,19 +471,21 @@ def _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir):
                 f"Epoch {epoch_idx}, Sample {s}",
                 fontsize=13, fontweight="bold"
             )
+
             ax_bar = fig.add_subplot(gs[0])
             ax_bar.bar(np.arange(len(weights)), weights, width=0.8,
                        color="steelblue", linewidth=0)
-            ax_bar.set_xlabel("Pre-synaptic neuron index")
+            ax_bar.set_xlabel("Input neuron index")
             ax_bar.set_ylabel("Weight magnitude")
             ax_bar.set_xlim(-0.5, len(weights) - 0.5)
             ax_bar.set_ylim(bottom=0)
             ax_bar.grid(True, axis="y", alpha=0.3)
 
             ax_hist = fig.add_subplot(gs[1])
-            w_nz = weights[weights > 0]
-            if len(w_nz) > 0:
-                ax_hist.hist(w_nz, bins=40, color="steelblue", edgecolor="none", density=True)
+            w_nonzero = weights[weights > 0]
+            if len(w_nonzero) > 0:
+                ax_hist.hist(w_nonzero, bins=40, color="steelblue",
+                             edgecolor="none", density=True)
             ax_hist.set_xlabel("Weight value")
             ax_hist.set_ylabel("Density")
             ax_hist.set_title("Distribution\n(non-zero)")
@@ -488,7 +493,7 @@ def _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir):
 
             plt.tight_layout()
             save(fig,
-                 f"weights_per_neuron_{pfx}_sample{s:03d}_neuron{nid:04d}.png",
+                 f"weights_per_neuron_{_pfx(name)}_sample{s:03d}_neuron{nid:04d}.png",
                  epoch_dir=epoch_dir)
 
 

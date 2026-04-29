@@ -63,7 +63,11 @@ class Recorder:
         self._built    = False
 
         with open(config_path) as f:
-            self._cfg = yaml.safe_load(f)
+            raw = yaml.safe_load(f)
+
+        # Support both the new record_and_visualize_config.yaml (with a
+        # top-level "record:" section) and the legacy flat format.
+        self._cfg = raw.get("record", raw)
 
         self._snapshot_interval = self._cfg.get("snapshot_interval_ms", 500) * ms
 
