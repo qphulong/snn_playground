@@ -171,6 +171,7 @@ class Recorder:
     # ─────────────────────────────────────────────────────────────────────────
 
     def reset_epoch(self):
+        self._elapsed_ms = 0.0
         self._epoch = {"groups": {}, "synapses": {}}
 
         for name, entry in self._groups.items():
@@ -209,6 +210,7 @@ class Recorder:
     def before_sample(self, sample_idx):
         """Snapshot spike-monitor lengths so we can isolate this sample's spikes."""
         _ = sample_idx
+        self._sample_start_ms = self._elapsed_ms
         for entry in self._groups.values():
             mon = entry["mon"]
             if "spike" in mon:
@@ -236,9 +238,11 @@ class Recorder:
         _ = sample_idx
         w_matrices = w_matrices or {}
 
+        start_ms = getattr(self, "_sample_start_ms", 0.0)
+
         def _slice(mon, baseline):
             i_all = np.array(mon.i)
-            t_all = np.array(mon.t / ms)
+            t_all = np.array(mon.t / ms) - start_ms
             return i_all[baseline:], t_all[baseline:]
 
         for name, entry in self._groups.items():
@@ -289,6 +293,8 @@ class Recorder:
 
             if cfg.get("final_weights_per_sample") and name in w_matrices:
                 e["weight_per_sample"].append(w_matrices[name].astype(np.float32))
+
+        self._elapsed_ms += duration_s * 1000.0
 
     def spikes_this_sample(self, group_name):
         """

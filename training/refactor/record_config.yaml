@@ -61,5 +61,5 @@ synapses:
   #   final_weights_per_sample: false
 
 # ── Visualize configs ────────────────────────────────────────────────────────────
-visualize_samples: [8,9]
+visualize_samples: [4,5]
 visualize_epoch: [0]

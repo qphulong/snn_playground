@@ -114,6 +114,8 @@ defaultclock.dt = DT_SIM
 
 # ── Input neurons ──────────────────────────────────────────────────────────────
 # TimedArray is replaced per-sample by patching G_in.namespace["I_timed"].
+# t_start is updated before each net.run() so that I_timed is indexed from 0
+# relative to the current sample start, not the global clock.
 # Do not call start_scope() or rebuild the network inside the sample loop.
 _dummy_I = np.zeros((1, N_IN), dtype=float)
 I_timed  = TimedArray(_dummy_I, dt=DT_SIM)
@@ -256,6 +258,7 @@ for epoch_idx in range(EPOCHS):
 
         # ── Feed new audio input (no network rebuild) ──────────────────────────
         G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
+        G_in.namespace["t_start"] = defaultclock.t
 
         # ── Reset neuron state — keep weights ──────────────────────────────────
         G_in.v        = 0
