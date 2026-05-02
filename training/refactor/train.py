@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
-from recorder import Recorder
+from src.recorder import Recorder
 
 import time
 start = time.time()
