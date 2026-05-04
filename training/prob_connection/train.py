@@ -19,7 +19,7 @@ start = time.time()
 wav_files = sorted(glob.glob("datasets/vox1_nano/dev/**/*.wav", recursive=True))
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 4
+EPOCHS   = 1
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================

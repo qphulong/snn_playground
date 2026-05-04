@@ -65,8 +65,8 @@ record:
 visualize:
 
   # Which samples and epochs to plot (comment out to plot all)
-  visualize_samples: [9]
-  visualize_epoch:   [2,3]
+  visualize_samples: []
+  visualize_epoch:   [0]
 
   track_weight_delta: false
 
@@ -75,17 +75,15 @@ visualize:
   groups:
 
     input:
-      spike_raster:       true
-      mean_firing_rate:   true
+      spike_raster:       false
+      mean_firing_rate:   false
       membrane_potential: []
       membrane_potential_variables: ["v"]
 
     hidden:
-      spike_raster:       true
-      mean_firing_rate:   true
-      membrane_potential:
-        - [0  ]
-        - [350]
+      spike_raster:       false
+      mean_firing_rate:   false
+      membrane_potential: []
       membrane_potential_variables: ["v", "vth", "is_winner"]
 
     # output:
@@ -100,9 +98,6 @@ visualize:
 
     in->hid:
       weights_evolution:
-        - [0,   0]
-        - [100, 100]
-        - [350, 350]
       final_weights_per_sample: true
 
     # hid->out:
@@ -116,6 +111,4 @@ visualize:
 
   weights_per_neuron:
     in->hid:
-      - 0
-      - 100
       - 350
