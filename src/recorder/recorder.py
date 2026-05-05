@@ -111,10 +111,11 @@ class Recorder:
             cfg = entry["cfg"]
             mon = entry["mon"]
 
-            # Spike monitor — used for raster and/or mean firing rate
-            if cfg.get("spike_raster") or cfg.get("mean_firing_rate"):
-                mon["spike"] = SpikeMonitor(g)
-                self._net.add(mon["spike"])
+            # Always attach a SpikeMonitor — spikes_this_sample() is called by
+            # train.py for homeostatic normalisation regardless of whether
+            # spike_raster or mean_firing_rate recording is enabled.
+            mon["spike"] = SpikeMonitor(g)
+            self._net.add(mon["spike"])
 
             # Voltage monitor — variables and neuron indices set per-group in config
             vmon_raw = cfg.get("membrane_potential", [])
