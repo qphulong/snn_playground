@@ -63,9 +63,6 @@ W_INIT_SUM       = 2
 # -- Homeostatic normalisation --
 NORM_LIMIT = 2
 
-# -- Probabilistic connectivity --
-P_CONNECT = 1.0   # fraction of input→hidden synapses to create
-
 
 # ============================================================
 # Weight matrix helpers
@@ -167,7 +164,7 @@ on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost*(w-wmin), wmin, w
 on_post = "apost += Apost_delta\nw = clip(w + apre*(wmax-w), wmin, wmax)"
 
 S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
-S_ih.connect(p=P_CONNECT)
+S_ih.connect()
 src_ih = np.array(S_ih.i)
 tgt_ih = np.array(S_ih.j)
 
