@@ -1,0 +1,66 @@
+# ============================================================
+# record_and_visualize_config.yaml
+#
+# record:    drives Recorder  — what Brian2 data to collect
+# visualize: drives visualize.py — what plots to produce
+#
+# The two sections are fully independent.
+# ============================================================
+
+
+# ── Recording configuration ───────────────────────────────────────────────────
+
+record:
+
+  snapshot_interval_ms: 500
+
+  groups:
+
+    input:
+      spike_raster:       true
+      mean_firing_rate:   false
+      membrane_potential: []
+      membrane_potential_variables: ["v"]
+
+    hidden:
+      spike_raster:       true
+      mean_firing_rate:   false
+      membrane_potential: []
+      membrane_potential_variables: ["v", "vth"]
+
+  synapses:
+
+    in->hid:
+      weights_evolution:        []   # no per-step snapshotting
+      final_weights_per_sample: false
+
+
+# ── Visualization configuration ───────────────────────────────────────────────
+
+visualize:
+
+  # Which samples to plot per run (empty = all)
+  visualize_samples: []
+
+  groups:
+
+    input:
+      spike_raster:     true
+      mean_firing_rate: false
+
+    hidden:
+      spike_raster:     true
+      mean_firing_rate: false
+
+  synapses:
+
+    in->hid:
+      final_weights_per_sample: false
+
+  # ── Per-neuron incoming weight plots ────────────────────────────────────────
+  # Add or remove neuron indices freely.
+
+  weights_per_neuron:
+    in->hid:
+      - 100
+      - 350
