@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
+from src.utils.weights_utils import gaussian_weight_matrix, l1_normalise_weights
 from src.recorder import Recorder
 
 import time
@@ -63,32 +64,6 @@ W_INIT_SUM       = 2
 # -- Homeostatic normalisation --
 NORM_LIMIT = 2
 
-
-# ============================================================
-# Weight matrix helpers
-# ============================================================
-
-def gaussian_weight_matrix(n_pre, n_post, sigma, noise_std, w_sum, wmin, wmax):
-    """Toroidal Gaussian initialisation."""
-    i = np.arange(n_pre).reshape(-1, 1)
-    j = np.arange(n_post).reshape(1, -1)
-    dist = np.abs(i - j)
-    dist = np.minimum(dist, n_pre - dist)
-    w = np.exp(-(dist ** 2) / (2 * sigma ** 2))
-    w += np.random.normal(0, noise_std, size=w.shape)
-    w = np.clip(w, 0, None)
-    w = w / w.sum(axis=0, keepdims=True) * w_sum
-    return np.clip(w, wmin, wmax)
-
-
-def normalise_weights(w, spiked_neurons, limit, wmin, wmax):
-    """Homeostatic column-sum normalisation for neurons that fired."""
-    w = w.copy()
-    for nrn in spiked_neurons:
-        wsum = w[:, nrn].sum()
-        if wsum > limit > 0:
-            w[:, nrn] *= limit / wsum
-    return np.clip(w, wmin, wmax)
 
 
 # ============================================================
@@ -302,7 +277,7 @@ for epoch_idx in range(EPOCHS):
         # not in the recorder. Use recorder.spikes_this_sample(name) to get
         # the spike indices for any registered group without touching monitors.
         spiked_hidden = np.unique(recorder.spikes_this_sample("hidden"))
-        w_ih = normalise_weights(w_ih_new, spiked_hidden, NORM_LIMIT, wmin, wmax)
+        w_ih = l1_normalise_weights(w_ih_new, spiked_hidden, NORM_LIMIT, wmin, wmax)
         # Example custom normalisation for a second synapse group:
         # spiked_output = np.unique(recorder.spikes_this_sample("output"))
         # w_ho = normalise_weights(w_ho_new, spiked_output, NORM_LIMIT, wmin, wmax)

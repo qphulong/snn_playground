@@ -1,0 +1,2 @@
+from .weights_init import gaussian_weight_matrix
+from .weight_normalize import l1_normalise_weights
