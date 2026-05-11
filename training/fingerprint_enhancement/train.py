@@ -1,7 +1,6 @@
 import numpy as np
 np.random.seed(42)
 from brian2 import *
-import glob
 import os
 import sys
 
@@ -17,10 +16,15 @@ start = time.time()
 # Dataset
 # ============================================================
 # TODO: set the path
-wav_files = sorted(glob.glob("datasets/vox1_single_person_nano_2/dev/*.wav", recursive=True))
+wav_files = [
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00001.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00002.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00003.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00004.wav",
+]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 1
+EPOCHS   = 2
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -157,7 +161,7 @@ def determine_winner():
     v   = G_h.v[:]
     vth = G_h.vth[:]
     crossed = v > vth
-    K = 35
+    K = 1
     if np.any(crossed):
         candidates = np.where(crossed)[0]
         sorted_idx = candidates[np.argsort(vth[candidates])]
@@ -165,7 +169,7 @@ def determine_winner():
         G_h.is_winner[:]       = False
         G_h.is_winner[winners] = True
         losers = np.setdiff1d(candidates, winners)
-        G_h.v[losers] = 0.5
+        G_h.v[losers] = 0.0
     else:
         G_h.is_winner[:] = False
 

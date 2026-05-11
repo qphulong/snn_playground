@@ -1,121 +1,51 @@
-# ============================================================
-# record_and_visualize_config.yaml
-#
-# record:    drives Recorder  — what Brian2 data to collect
-# visualize: drives visualize.py — what plots to produce
-#
-# The two sections are fully independent: recorder.py reads only
-# from record:, and visualize.py reads only from visualize:.
-# ============================================================
-
-
-# ── Recording configuration ───────────────────────────────────────────────────
-
 record:
 
-  # How often to snapshot weight evolution (milliseconds)
   snapshot_interval_ms: 500
-
-  # ── Neuron groups ───────────────────────────────────────────────────────────
 
   groups:
 
     input:
       spike_raster:       true
-      mean_firing_rate:   true
-      membrane_potential: []          # list of neuron indices, or [idx, [t0_ms, t1_ms]]
-      membrane_potential_variables: ["v"]
+      mean_firing_rate:   false
+      membrane_potential: []
+      membrane_potential_variables: []
 
     hidden:
       spike_raster:       true
-      mean_firing_rate:   true
-      membrane_potential:
-        - [0  ]
-        - [350]
-      membrane_potential_variables: ["v", "vth", "is_winner"]
-
-    # ── Template for a new group ────────────────────────────────────────────
-    # output:
-    #   spike_raster:       true
-    #   mean_firing_rate:   true
-    #   membrane_potential: []
-    #   membrane_potential_variables: ["v"]
-
-  # ── Synapse groups ──────────────────────────────────────────────────────────
+      mean_firing_rate:   false
+      membrane_potential: []
+      membrane_potential_variables: []
 
   synapses:
 
     in->hid:
-      weights_evolution:
-        - [0,   0]
-        - [100, 100]
-        - [350, 350]
+      weights_evolution:        []
       final_weights_per_sample: true
 
-    # ── Template for a new synapse group ───────────────────────────────────
-    # hid->out:
-    #   weights_evolution:
-    #     - [0, 0]
-    #     - [50, 10]
-    #   final_weights_per_sample: false
-
-
-# ── Visualization configuration ───────────────────────────────────────────────
 
 visualize:
 
-  # Which samples and epochs to plot (comment out to plot all)
-  visualize_samples: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-  visualize_epoch:   [0]
-
-  track_weight_delta: false
-
-  # ── Neuron groups ───────────────────────────────────────────────────────────
-
   groups:
 
     input:
       spike_raster:       true
-      mean_firing_rate:   true
+      mean_firing_rate:   false
       membrane_potential: []
-      membrane_potential_variables: ["v"]
+      membrane_potential_variables: []
 
     hidden:
       spike_raster:       true
-      mean_firing_rate:   true
-      membrane_potential:
-        - [0  ]
-        - [350]
-      membrane_potential_variables: ["v", "vth", "is_winner"]
-
-    # output:
-    #   spike_raster:       true
-    #   mean_firing_rate:   true
-    #   membrane_potential: []
-    #   membrane_potential_variables: ["v"]
-
-  # ── Synapse groups ──────────────────────────────────────────────────────────
+      mean_firing_rate:   false
+      membrane_potential: []
+      membrane_potential_variables: []
 
   synapses:
 
     in->hid:
-      weights_evolution:
-        - [0,   0]
-        - [100, 100]
-        - [350, 350]
+      weights_evolution:        []
       final_weights_per_sample: true
-
-    # hid->out:
-    #   weights_evolution:
-    #     - [0, 0]
-    #     - [50, 10]
-    #   final_weights_per_sample: false
-
-  # ── Per-neuron incoming weight plots ────────────────────────────────────────
-  # Keyed by synapse name; lists post-synaptic neuron indices to plot.
 
   weights_per_neuron:
     in->hid:
-      - 0
-      - 100
-      - 350
+      - 300
+      - 400
