@@ -84,8 +84,8 @@ vth_jump = 0.3
 
 taupre      = 20  * ms
 taupost     = 20  * ms
-Apre_delta  =  0.0001
-Apost_delta = -0.00012
+Apre_delta  =  0.004
+Apost_delta = -0.0048
 
 wmax = 1.0
 wmin = 0.0

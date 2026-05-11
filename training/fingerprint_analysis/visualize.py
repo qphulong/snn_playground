@@ -3,8 +3,8 @@ fingerprint_analysis/visualize.py
 ===================================
 Loads recorder epoch data and fingerprints, then produces:
 
-  vizs/A/epoch_NNN/          — raster plots for run A
-  vizs/B/epoch_NNN/          — raster plots for run B
+  vizs/A/epoch_NNN/          — all enabled plots for run A
+  vizs/B/epoch_NNN/          — all enabled plots for run B
   vizs/fingerprint_analysis/ — fingerprint comparison plots:
       neuron_{N}_weights.png
       difference_heatmap.png
@@ -13,9 +13,9 @@ Loads recorder epoch data and fingerprints, then produces:
       per_neuron_pearson.png
       stats.txt
 
+Per-run plots mirror training/standard_template/visualize.py exactly.
 Configuration is driven by visualize_A and visualize_B sections of
-record_and_visualize_config.yaml.  weights_per_neuron from visualize_A
-is used for the per-neuron fingerprint comparison plots.
+record_and_visualize_config.yaml.
 
 Usage:
     python visualize.py
@@ -58,7 +58,7 @@ viz_cfg_B = _cfg.get("visualize_B", {})
 
 saved = []
 
-GROUP_COLORS = {"input": "steelblue", "hidden": "mediumseagreen"}
+GROUP_COLORS = {"input": "steelblue", "hidden": "mediumseagreen", "output": "darkorange"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -89,11 +89,76 @@ def _get(data, name, field):
     return data[_k(name, field)]
 
 
+def _window_mask(t, t_start, t_end):
+    mask = np.ones(len(t), dtype=bool)
+    if t_start >= 0:
+        mask &= t >= t_start
+    if t_end >= 0:
+        mask &= t <= t_end
+    return mask
+
+
+def _sample_indices(n_total, visualize_samples):
+    if visualize_samples:
+        return [s for s in visualize_samples if s < n_total]
+    return list(range(n_total))
+
+
+def _epochs_to_visualize(n_total, visualize_epoch):
+    if visualize_epoch:
+        return [e for e in visualize_epoch if e < n_total]
+    return list(range(n_total))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Raster plot helper
+# Plot helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _plot_spike_raster(data, keys, name, epoch_idx, sample_idxs, color, out_base):
+def _plot_weight_matrix(W, title, path):
+    fig = plt.figure(figsize=(13, 5))
+    gs  = gridspec.GridSpec(1, 2, width_ratios=[3, 1], figure=fig)
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+
+    ax_heat = fig.add_subplot(gs[0])
+    im = ax_heat.imshow(
+        W, aspect="auto", interpolation="nearest", cmap="viridis",
+        vmin=0, vmax=W.max() if W.max() > 0 else 1, origin="lower",
+    )
+    ax_heat.set_xlabel("Post-synaptic neuron index")
+    ax_heat.set_ylabel("Pre-synaptic neuron index")
+    plt.colorbar(im, ax=ax_heat, label="Weight")
+
+    ax_hist = fig.add_subplot(gs[1])
+    w_flat = W.flatten()
+    ax_hist.hist(w_flat[w_flat > 0], bins=60, color="steelblue", edgecolor="none", density=True)
+    ax_hist.set_xlabel("Weight value")
+    ax_hist.set_ylabel("Density")
+    ax_hist.set_title("Distribution\n(non-zero)")
+    ax_hist.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    _save(fig, path)
+
+
+def _plot_firing_rate(rates, title, path, color="darkorange"):
+    n = len(rates)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.bar(np.arange(n), rates, width=1.0, color=color, linewidth=0)
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.set_xlabel("Neuron index")
+    ax.set_ylabel("Mean rate (Hz)")
+    ax.set_xlim(-0.5, n - 0.5)
+    ax.set_ylim(bottom=0)
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    _save(fig, path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-group plot routines
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _plot_spike_raster(data, keys, name, epoch_idx, sample_idxs, color, epoch_out):
     if not (_has(keys, name, "raster_i") and _has(keys, name, "raster_t")):
         return
     raster_i  = _get(data, name, "raster_i")
@@ -121,9 +186,296 @@ def _plot_spike_raster(data, keys, name, epoch_idx, sample_idxs, color, out_base
         ax.set_ylim(-0.5, n_neurons - 0.5)
         ax.grid(True, alpha=0.2)
         plt.tight_layout()
+        _save(fig, os.path.join(epoch_out, f"raster_{_pfx(name)}_sample{s:03d}.png"))
 
-        fname = f"raster_{_pfx(name)}_sample{s:03d}.png"
-        _save(fig, os.path.join(out_base, f"epoch_{epoch_idx:03d}", fname))
+
+def _plot_spike_counts(data, keys, name, epoch_idx, sample_idxs, color, epoch_out):
+    if not _has(keys, name, "raster_i"):
+        return
+    raster_i  = _get(data, name, "raster_i")
+    n_total   = int(_get(data, name, "raster_n_samples"))
+    n_neurons = int(_get(data, name, "raster_n_neurons"))
+
+    for s in sample_idxs:
+        if s >= n_total:
+            continue
+        sp_i = raster_i[s]
+        counts = (np.bincount(sp_i.astype(np.int32), minlength=n_neurons)
+                  if len(sp_i) > 0 else np.zeros(n_neurons, dtype=np.int32))
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.bar(np.arange(n_neurons), counts, width=1.0, color=color, linewidth=0)
+        ax.set_title(
+            f"Spike Count — {name}  |  Epoch {epoch_idx}, Sample {s}",
+            fontsize=13, fontweight="bold",
+        )
+        ax.set_xlabel("Neuron index")
+        ax.set_ylabel("Spike count")
+        ax.set_xlim(-0.5, n_neurons - 0.5)
+        ax.set_ylim(bottom=0)
+        ax.grid(True, axis="y", alpha=0.3)
+        plt.tight_layout()
+        _save(fig, os.path.join(epoch_out, f"spike_count_{_pfx(name)}_sample{s:03d}.png"))
+
+
+def _plot_mean_firing_rate(data, keys, name, epoch_idx, sample_idxs, color, epoch_out):
+    pfx = _pfx(name)
+
+    if _has(keys, name, "mfr"):
+        _plot_firing_rate(
+            _get(data, name, "mfr"),
+            f"Mean Firing Rate — {name}  |  Epoch {epoch_idx}, all samples",
+            os.path.join(epoch_out, f"mean_firing_rate_{pfx}_all.png"),
+            color=color,
+        )
+
+    if (_has(keys, name, "mfr_sample_counts") and _has(keys, name, "mfr_sample_dur_s")):
+        sample_counts = _get(data, name, "mfr_sample_counts")
+        sample_durs   = _get(data, name, "mfr_sample_dur_s")
+        n_total       = len(sample_durs)
+
+        for s in sample_idxs:
+            if s >= n_total:
+                continue
+            dur   = float(sample_durs[s])
+            rates = (sample_counts[s] / dur if dur > 0
+                     else np.zeros_like(sample_counts[s], dtype=np.float32))
+            _plot_firing_rate(
+                rates.astype(np.float32),
+                f"Mean Firing Rate — {name}  |  Epoch {epoch_idx}, Sample {s}",
+                os.path.join(epoch_out, f"mean_firing_rate_{pfx}_sample{s:03d}.png"),
+                color=color,
+            )
+
+
+def _plot_membrane_potential(data, keys, name, epoch_idx, sample_idxs, epoch_out):
+    v_key = _k(name, "vmon_v_all")
+    t_key = _k(name, "vmon_t_all")
+    if v_key not in keys or t_key not in keys:
+        return
+
+    neurons = _get(data, name, "vmon_indices")
+    t_all   = _get(data, name, "vmon_t_all")
+    windows = _get(data, name, "vmon_windows")
+    n_total = len(t_all)
+    pfx     = _pfx(name)
+
+    var_keys = {}
+    for k in keys:
+        tag = f"{_pfx(name)}__vmon_"
+        if k.startswith(tag) and k.endswith("_all"):
+            var = k[len(tag):-4]
+            if var != "t":
+                var_keys[var] = k
+
+    if not var_keys:
+        return
+
+    for s in sample_idxs:
+        if s >= n_total:
+            continue
+        t = t_all[s]
+
+        for k_idx, nid in enumerate(neurons):
+            t_start = float(windows[k_idx, 1]) if windows[k_idx, 1] >= 0 else -1.0
+            t_end   = float(windows[k_idx, 2]) if windows[k_idx, 2] >= 0 else -1.0
+            mask    = _window_mask(t, t_start, t_end)
+            t_w     = t[mask]
+
+            n_vars = len(var_keys)
+            fig, axes = plt.subplots(n_vars, 1, figsize=(11, 3 * n_vars), sharex=True,
+                                     squeeze=False)
+            win_str = f"  [{t_start:.0f}–{t_end:.0f} ms]" if t_start >= 0 else ""
+            fig.suptitle(
+                f"State Variables — {name}, Neuron {nid}  |  "
+                f"Epoch {epoch_idx}, Sample {s}{win_str}",
+                fontsize=11, fontweight="bold",
+            )
+
+            colors_list = ["steelblue", "crimson", "darkorange", "mediumseagreen",
+                           "mediumpurple", "saddlebrown"]
+
+            for ax_i, (var, full_key) in enumerate(sorted(var_keys.items())):
+                ax  = axes[ax_i, 0]
+                arr = data[full_key][s]
+                y_w = arr[k_idx][mask]
+                ax.plot(t_w, y_w, lw=0.8, color=colors_list[ax_i % len(colors_list)], label=var)
+                ax.set_ylabel(var)
+                ax.legend(fontsize=8, loc="upper right")
+                ax.grid(True, alpha=0.3)
+
+            axes[-1, 0].set_xlabel("Time (ms)")
+            plt.tight_layout()
+            win_suffix = (f"_window{t_start:.0f}_{t_end:.0f}ms" if t_start >= 0 else "")
+            _save(fig, os.path.join(epoch_out,
+                                    f"vmon_{pfx}_sample{s:03d}_neuron{nid:04d}{win_suffix}.png"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-synapse plot routines
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _plot_weight_evolution(data, keys, name, epoch_idx, sample_idxs, epoch_out):
+    if not _has(keys, name, "we_pairs"):
+        return
+    pairs  = _get(data, name, "we_pairs")
+    values = _get(data, name, "we_values")
+    pfx    = _pfx(name)
+
+    x_axis = np.arange(values.shape[1])
+    for k, (pi, pj) in enumerate(pairs):
+        fig, ax = plt.subplots(figsize=(11, 3))
+        ax.plot(x_axis, values[k], lw=1.5, color=f"C{k % 10}")
+        ax.set_title(
+            f"Weight Evolution (epoch {epoch_idx}, all samples) — "
+            f"{name}  pre[{pi}] → post[{pj}]",
+            fontsize=12, fontweight="bold",
+        )
+        ax.set_xlabel("Snapshot index")
+        ax.set_ylabel("Weight")
+        ax.set_ylim(0, 1)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        _save(fig, os.path.join(epoch_out,
+                                f"weight_evolution_{pfx}_all_pre{pi:04d}_post{pj:04d}.png"))
+
+    if (_has(keys, name, "we_sample_values") and _has(keys, name, "we_sample_times")):
+        sample_values = _get(data, name, "we_sample_values")
+        sample_times  = _get(data, name, "we_sample_times")
+        n_total       = len(sample_times)
+
+        for s in sample_idxs:
+            if s >= n_total:
+                continue
+            sv     = sample_values[s]
+            st     = sample_times[s]
+            if len(st) == 0:
+                continue
+            st_rel = st - st[0]
+
+            for k, (pi, pj) in enumerate(pairs):
+                fig, ax = plt.subplots(figsize=(11, 3))
+                ax.plot(st_rel, sv[k], lw=1.5, color=f"C{k % 10}")
+                ax.set_title(
+                    f"Weight Evolution (epoch {epoch_idx}, sample {s}) — "
+                    f"{name}  pre[{pi}] → post[{pj}]",
+                    fontsize=12, fontweight="bold",
+                )
+                ax.set_xlabel("Time within sample (ms)")
+                ax.set_ylabel("Weight")
+                ax.set_ylim(0, 1)
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+                _save(fig, os.path.join(epoch_out,
+                                        f"weight_evolution_{pfx}_sample{s:03d}_"
+                                        f"pre{pi:04d}_post{pj:04d}.png"))
+
+
+def _plot_weight_delta(data, keys, name, epoch_idx, track_weight_delta, epoch_out):
+    if not track_weight_delta:
+        return
+    if not _has(keys, name, "we_pairs"):
+        return
+    pairs  = _get(data, name, "we_pairs")
+    values = _get(data, name, "we_values")
+    pfx    = _pfx(name)
+
+    x_axis = np.arange(values.shape[1])
+    for k, (pi, pj) in enumerate(pairs):
+        w_vals = values[k]
+        deltas = np.diff(w_vals, prepend=w_vals[0])
+        fig, ax = plt.subplots(figsize=(11, 3))
+        ax.plot(x_axis, deltas, lw=1.5, color=f"C{k % 10}", marker="o", markersize=3)
+        ax.axhline(0, color="black", lw=0.5, ls="--", alpha=0.5)
+        ax.set_title(
+            f"Weight Delta (epoch {epoch_idx}) — {name}  pre[{pi}] → post[{pj}]",
+            fontsize=12, fontweight="bold",
+        )
+        ax.set_xlabel("Snapshot index")
+        ax.set_ylabel("Δw")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        _save(fig, os.path.join(epoch_out,
+                                f"weight_delta_{pfx}_all_pre{pi:04d}_post{pj:04d}.png"))
+
+
+def _plot_synapse_weight_matrix(data, keys, name, epoch_idx, sample_idxs, epoch_out):
+    pfx = _pfx(name)
+
+    if _has(keys, name, "final_weights"):
+        W = _get(data, name, "final_weights")
+        _plot_weight_matrix(
+            W,
+            f"Final Weight Matrix — {name}  |  Epoch {epoch_idx}",
+            os.path.join(epoch_out, f"final_weight_matrix_{pfx}.png"),
+        )
+
+    if (_has(keys, name, "weight_per_sample") and _has(keys, name, "weight_n_samples")):
+        wm_per_sample = _get(data, name, "weight_per_sample")
+        n_total       = int(_get(data, name, "weight_n_samples"))
+
+        for s in sample_idxs:
+            if s >= n_total:
+                continue
+            W = wm_per_sample[s]
+            _plot_weight_matrix(
+                W,
+                f"Weight Matrix — {name}  |  Epoch {epoch_idx}, after sample {s}",
+                os.path.join(epoch_out, f"weight_matrix_{pfx}_sample{s:03d}.png"),
+            )
+
+
+def _plot_weights_per_neuron(data, keys, name, epoch_idx, sample_idxs,
+                              weights_per_neuron, epoch_out):
+    neuron_ids = weights_per_neuron.get(name, [])
+    if not neuron_ids:
+        return
+    if not (_has(keys, name, "weight_per_sample") and _has(keys, name, "weight_n_samples")):
+        return
+    wm_per_sample = _get(data, name, "weight_per_sample")
+    n_total       = int(_get(data, name, "weight_n_samples"))
+
+    for s in sample_idxs:
+        if s >= n_total:
+            continue
+        W = wm_per_sample[s]
+
+        for nid in neuron_ids:
+            nid = int(nid)
+            if nid >= W.shape[1]:
+                continue
+            weights = W[:, nid]
+
+            fig = plt.figure(figsize=(14, 5))
+            gs  = gridspec.GridSpec(1, 2, width_ratios=[2, 1], figure=fig)
+            fig.suptitle(
+                f"Incoming Weights — {name}, post-neuron {nid}  |  "
+                f"Epoch {epoch_idx}, Sample {s}",
+                fontsize=13, fontweight="bold",
+            )
+
+            ax_bar = fig.add_subplot(gs[0])
+            ax_bar.bar(np.arange(len(weights)), weights, width=0.8,
+                       color="steelblue", linewidth=0)
+            ax_bar.set_xlabel("Input neuron index")
+            ax_bar.set_ylabel("Weight magnitude")
+            ax_bar.set_xlim(-0.5, len(weights) - 0.5)
+            ax_bar.set_ylim(bottom=0)
+            ax_bar.grid(True, axis="y", alpha=0.3)
+
+            ax_hist = fig.add_subplot(gs[1])
+            w_nonzero = weights[weights > 0]
+            if len(w_nonzero) > 0:
+                ax_hist.hist(w_nonzero, bins=40, color="steelblue",
+                             edgecolor="none", density=True)
+            ax_hist.set_xlabel("Weight value")
+            ax_hist.set_ylabel("Density")
+            ax_hist.set_title("Distribution\n(non-zero)")
+            ax_hist.grid(True, alpha=0.3)
+
+            plt.tight_layout()
+            _save(fig, os.path.join(epoch_out,
+                                    f"weights_per_neuron_{_pfx(name)}_"
+                                    f"sample{s:03d}_neuron{nid:04d}.png"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -131,9 +483,12 @@ def _plot_spike_raster(data, keys, name, epoch_idx, sample_idxs, color, out_base
 # ─────────────────────────────────────────────────────────────────────────────
 
 def visualize_run(run_label, run_dir, viz_cfg, out_base):
-    group_cfg         = viz_cfg.get("groups", {}) or {}
-    visualize_samples = viz_cfg.get("visualize_samples") or None
-    visualize_epoch   = viz_cfg.get("visualize_epoch") or []
+    group_cfg          = viz_cfg.get("groups",            {}) or {}
+    synapse_cfg        = viz_cfg.get("synapses",          {}) or {}
+    weights_per_neuron = viz_cfg.get("weights_per_neuron",{}) or {}
+    track_weight_delta = viz_cfg.get("track_weight_delta", False)
+    visualize_samples  = viz_cfg.get("visualize_samples") or None
+    visualize_epoch    = viz_cfg.get("visualize_epoch")   or []
 
     epoch_files = sorted(glob_mod.glob(os.path.join(run_dir, "history_epoch_*.npz")))
     if not epoch_files:
@@ -141,8 +496,7 @@ def visualize_run(run_label, run_dir, viz_cfg, out_base):
         return
 
     n_epochs      = len(epoch_files)
-    epochs_to_viz = ([e for e in visualize_epoch if e < n_epochs]
-                     if visualize_epoch else list(range(n_epochs)))
+    epochs_to_viz = _epochs_to_visualize(n_epochs, visualize_epoch)
 
     for epoch_idx, npz_path in enumerate(epoch_files):
         if epoch_idx not in epochs_to_viz:
@@ -157,14 +511,39 @@ def visualize_run(run_label, run_dir, viz_cfg, out_base):
                 n_samples = int(_get(data, gname, "raster_n_samples"))
                 break
 
-        sample_idxs = ([s for s in visualize_samples if s < n_samples]
-                       if visualize_samples else list(range(n_samples)))
+        sample_idxs = _sample_indices(n_samples, visualize_samples)
+        epoch_out   = os.path.join(out_base, f"epoch_{epoch_idx:03d}")
 
+        # ── Groups ────────────────────────────────────────────────────────────
         for name, gcfg in group_cfg.items():
+            color = GROUP_COLORS.get(name, "mediumpurple")
             if gcfg.get("spike_raster"):
-                color = GROUP_COLORS.get(name, "mediumpurple")
-                _plot_spike_raster(data, keys, name, epoch_idx,
-                                   sample_idxs, color, out_base)
+                _plot_spike_raster(data, keys, name, epoch_idx, sample_idxs, color, epoch_out)
+                _plot_spike_counts(data, keys, name, epoch_idx, sample_idxs, color, epoch_out)
+            if gcfg.get("mean_firing_rate"):
+                _plot_mean_firing_rate(data, keys, name, epoch_idx, sample_idxs, color, epoch_out)
+            if gcfg.get("membrane_potential"):
+                _plot_membrane_potential(data, keys, name, epoch_idx, sample_idxs, epoch_out)
+
+        # ── Synapses ──────────────────────────────────────────────────────────
+        for name in synapse_cfg:
+            _plot_weight_evolution(data, keys, name, epoch_idx, sample_idxs, epoch_out)
+            _plot_weight_delta(data, keys, name, epoch_idx, track_weight_delta, epoch_out)
+            _plot_synapse_weight_matrix(data, keys, name, epoch_idx, sample_idxs, epoch_out)
+            _plot_weights_per_neuron(data, keys, name, epoch_idx, sample_idxs,
+                                     weights_per_neuron, epoch_out)
+
+        # ── Initial weight matrices (epoch 0 only) ────────────────────────────
+        if epoch_idx == 0:
+            init_out = os.path.join(out_base, "epoch_init")
+            for name in synapse_cfg:
+                if _has(keys, name, "init_weights"):
+                    W = _get(data, name, "init_weights")
+                    _plot_weight_matrix(
+                        W,
+                        f"Initial Weight Matrix — {name}",
+                        os.path.join(init_out, f"init_weight_matrix_{_pfx(name)}.png"),
+                    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,11 +581,10 @@ def _save_fp(fig, name):
 
 
 # ── Per-neuron incoming weight plots ──────────────────────────────────────────
-# Neuron IDs come from visualize_A's weights_per_neuron config.
 
-weights_per_neuron = viz_cfg_A.get("weights_per_neuron", {}) or {}
+weights_per_neuron_fp = viz_cfg_A.get("weights_per_neuron", {}) or {}
 
-for syn_name, neuron_ids in weights_per_neuron.items():
+for syn_name, neuron_ids in weights_per_neuron_fp.items():
     for nid in (neuron_ids or []):
         nid = int(nid)
         if nid >= N_H:

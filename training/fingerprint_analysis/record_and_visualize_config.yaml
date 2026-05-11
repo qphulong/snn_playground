@@ -16,30 +16,30 @@
 
 record_A:
 
-  epochs:             8
-  sample_from_epoch:  6
+  epochs:             2
+  sample_from_epoch:  1
 
   snapshot_interval_ms: 500
 
   groups:
 
     input:
-      spike_raster:       true
+      spike_raster:       false
       mean_firing_rate:   false
       membrane_potential: []
       membrane_potential_variables: ["v"]
 
     hidden:
       spike_raster:       true
-      mean_firing_rate:   false
+      mean_firing_rate:   true
       membrane_potential: []
-      membrane_potential_variables: ["v", "vth"]
+      membrane_potential_variables: ["v", "vth", "is_winner"]
 
   synapses:
 
     in->hid:
-      weights_evolution:        []
-      final_weights_per_sample: false
+      weights_evolution:
+      final_weights_per_sample: true
 
 
 visualize_A:
@@ -51,17 +51,18 @@ visualize_A:
   groups:
 
     input:
-      spike_raster:     true
+      spike_raster:     false
       mean_firing_rate: false
 
     hidden:
       spike_raster:     true
-      mean_firing_rate: false
+      mean_firing_rate: true
 
   synapses:
 
     in->hid:
-      final_weights_per_sample: false
+      weights_evolution:
+      final_weights_per_sample: true
 
   weights_per_neuron:
     in->hid:
@@ -73,30 +74,30 @@ visualize_A:
 
 record_B:
 
-  epochs:             8
-  sample_from_epoch:  6
+  epochs:             2
+  sample_from_epoch:  1
 
   snapshot_interval_ms: 500
 
   groups:
 
     input:
-      spike_raster:       true
+      spike_raster:       false
       mean_firing_rate:   false
       membrane_potential: []
       membrane_potential_variables: ["v"]
 
     hidden:
       spike_raster:       true
-      mean_firing_rate:   false
+      mean_firing_rate:   true
       membrane_potential: []
-      membrane_potential_variables: ["v", "vth"]
+      membrane_potential_variables: ["v", "vth", "is_winner"]
 
   synapses:
 
     in->hid:
-      weights_evolution:        []
-      final_weights_per_sample: false
+      weights_evolution:
+      final_weights_per_sample: true
 
 
 visualize_B:
@@ -108,17 +109,18 @@ visualize_B:
   groups:
 
     input:
-      spike_raster:     true
+      spike_raster:     false
       mean_firing_rate: false
 
     hidden:
       spike_raster:     true
-      mean_firing_rate: false
+      mean_firing_rate: true
 
   synapses:
 
     in->hid:
-      final_weights_per_sample: false
+      weights_evolution:
+      final_weights_per_sample: true
 
   weights_per_neuron:
     in->hid:
