@@ -24,7 +24,7 @@ wav_files = [
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 2
+EPOCHS   = 16
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -53,8 +53,8 @@ vth_jump = 0.3
 # -- STDP --
 taupre      = 20 * ms
 taupost     = 20 * ms
-Apre_delta  =  0.0001
-Apost_delta = -0.00012
+Apre_delta  =  0.004
+Apost_delta = -0.0048
 
 # -- Synaptic weight bounds --
 wmax = 1.0
