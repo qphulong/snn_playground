@@ -24,7 +24,7 @@ wav_files = [
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 16
+EPOCHS   = 2
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================

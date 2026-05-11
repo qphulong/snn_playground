@@ -25,6 +25,8 @@ record:
 
 visualize:
 
+  visualize_epoch: [0, 1]
+
   groups:
 
     input:
