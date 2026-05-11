@@ -1,23 +1,21 @@
 """
-convergence_proof/visualize.py
-==============================
-Loads recorder epoch data from run_3sample/ and run_1sample/ plus the averaged
-fingerprints from fingerprints.npz, then produces:
+fingerprint_analysis/visualize.py
+===================================
+Loads recorder epoch data and fingerprints, then produces:
 
-  Raster plots (driven by record_and_visualize_config.yaml > visualize:)
-    vizs/rasters/3sample_epoch{E}_input_sample{S}.png
-    vizs/rasters/3sample_epoch{E}_hidden_sample{S}.png
-    vizs/rasters/1sample_epoch{E}_input_sample{S}.png
-    vizs/rasters/1sample_epoch{E}_hidden_sample{S}.png
-    vizs/rasters/compare_hidden_sample0.png   — side-by-side last epoch, sample 0
+  vizs/A/epoch_NNN/          — raster plots for run A
+  vizs/B/epoch_NNN/          — raster plots for run B
+  vizs/fingerprint_analysis/ — fingerprint comparison plots:
+      neuron_{N}_weights.png
+      difference_heatmap.png
+      per_neuron_l2.png
+      difference_histogram.png
+      per_neuron_pearson.png
+      stats.txt
 
-  Fingerprint comparison (from fingerprints.npz)
-    vizs/neuron_{N}_weights.png          — per-neuron incoming weights (yaml config)
-    vizs/difference_heatmap.png
-    vizs/per_neuron_l2.png
-    vizs/difference_histogram.png
-    vizs/per_neuron_pearson.png
-    vizs/stats.txt
+Configuration is driven by visualize_A and visualize_B sections of
+record_and_visualize_config.yaml.  weights_per_neuron from visualize_A
+is used for the per-neuron fingerprint comparison plots.
 
 Usage:
     python visualize.py
@@ -35,30 +33,37 @@ import yaml
 from scipy import stats
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Paths & config
+# Paths
 # ─────────────────────────────────────────────────────────────────────────────
 
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-CFG_PATH     = os.path.join(SCRIPT_DIR, "record_and_visualize_config.yaml")
-FP_PATH      = os.path.join(SCRIPT_DIR, "fingerprints.npz")
-DIR_3        = os.path.join(SCRIPT_DIR, "run_3sample")
-DIR_1        = os.path.join(SCRIPT_DIR, "run_1sample")
-OUT_DIR      = os.path.join(SCRIPT_DIR, "vizs")
-OUT_RASTERS  = os.path.join(OUT_DIR, "rasters")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CFG_PATH   = os.path.join(SCRIPT_DIR, "record_and_visualize_config.yaml")
+FP_PATH    = os.path.join(SCRIPT_DIR, "fingerprints.npz")
+DIR_A      = os.path.join(SCRIPT_DIR, "run_A")
+DIR_B      = os.path.join(SCRIPT_DIR, "run_B")
+OUT_DIR    = os.path.join(SCRIPT_DIR, "vizs")
+OUT_A      = os.path.join(OUT_DIR, "A")
+OUT_B      = os.path.join(OUT_DIR, "B")
+OUT_FP     = os.path.join(OUT_DIR, "fingerprint_analysis")
 
-os.makedirs(OUT_DIR,     exist_ok=True)
-os.makedirs(OUT_RASTERS, exist_ok=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# Config
+# ─────────────────────────────────────────────────────────────────────────────
 
 with open(CFG_PATH) as f:
-    cfg = yaml.safe_load(f)
+    _cfg = yaml.safe_load(f)
 
-viz_cfg            = cfg.get("visualize", {})
-visualize_samples  = viz_cfg.get("visualize_samples") or None   # None = all
-group_viz          = viz_cfg.get("groups",           {}) or {}
-weights_per_neuron = viz_cfg.get("weights_per_neuron", {}) or {}
+viz_cfg_A = _cfg.get("visualize_A", {})
+viz_cfg_B = _cfg.get("visualize_B", {})
 
 saved = []
 
+GROUP_COLORS = {"input": "steelblue", "hidden": "mediumseagreen"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _save(fig, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -84,37 +89,11 @@ def _get(data, name, field):
     return data[_k(name, field)]
 
 
-def _sample_indices(n_total):
-    if visualize_samples:
-        return [s for s in visualize_samples if s < n_total]
-    return list(range(n_total))
-
-
-def _load_last_epoch(run_dir):
-    """Return (epoch_idx, data) for the last epoch npz in run_dir, or None."""
-    files = sorted(glob_mod.glob(os.path.join(run_dir, "history_epoch_*.npz")))
-    if not files:
-        return None, None
-    path = files[-1]
-    idx  = int(os.path.basename(path).split("_")[-1].split(".")[0])
-    return idx, np.load(path, allow_pickle=True)
-
-
-def _load_all_epochs(run_dir):
-    """Return list of (epoch_idx, data) for all epoch npz files in run_dir."""
-    files = sorted(glob_mod.glob(os.path.join(run_dir, "history_epoch_*.npz")))
-    result = []
-    for path in files:
-        idx = int(os.path.basename(path).split("_")[-1].split(".")[0])
-        result.append((idx, np.load(path, allow_pickle=True)))
-    return result
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Raster plot helper  (same style as standard_template/visualize.py)
+# Raster plot helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _plot_spike_raster(data, keys, name, epoch_idx, sample_indices, color, out_subdir, run_label):
+def _plot_spike_raster(data, keys, name, epoch_idx, sample_idxs, color, out_base):
     if not (_has(keys, name, "raster_i") and _has(keys, name, "raster_t")):
         return
     raster_i  = _get(data, name, "raster_i")
@@ -122,7 +101,7 @@ def _plot_spike_raster(data, keys, name, epoch_idx, sample_indices, color, out_s
     n_total   = int(_get(data, name, "raster_n_samples"))
     n_neurons = int(_get(data, name, "raster_n_neurons"))
 
-    for s in sample_indices:
+    for s in sample_idxs:
         if s >= n_total:
             continue
         sp_i = raster_i[s]
@@ -132,7 +111,7 @@ def _plot_spike_raster(data, keys, name, epoch_idx, sample_indices, color, out_s
         if len(sp_t) > 0:
             ax.scatter(sp_t, sp_i, s=0.5, c=color, linewidths=0, rasterized=True)
         ax.set_title(
-            f"Spike Raster — {name}  |  {run_label}, Epoch {epoch_idx}, Sample {s}"
+            f"Spike Raster — {name}  |  Epoch {epoch_idx}, Sample {s}"
             f"  ({len(sp_t):,} spikes)",
             fontsize=12, fontweight="bold",
         )
@@ -143,98 +122,64 @@ def _plot_spike_raster(data, keys, name, epoch_idx, sample_indices, color, out_s
         ax.grid(True, alpha=0.2)
         plt.tight_layout()
 
-        fname = f"{run_label}_epoch{epoch_idx:03d}_{_pfx(name)}_sample{s:03d}.png"
-        _save(fig, os.path.join(out_subdir, fname))
+        fname = f"raster_{_pfx(name)}_sample{s:03d}.png"
+        _save(fig, os.path.join(out_base, f"epoch_{epoch_idx:03d}", fname))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1.  Raster plots from recorder epoch files
+# Per-run visualization
 # ─────────────────────────────────────────────────────────────────────────────
 
-RUNS = [
-    ("3sample", DIR_3, "steelblue"),
-    ("1sample", DIR_1, "darkorange"),
-]
+def visualize_run(run_label, run_dir, viz_cfg, out_base):
+    group_cfg         = viz_cfg.get("groups", {}) or {}
+    visualize_samples = viz_cfg.get("visualize_samples") or None
+    visualize_epoch   = viz_cfg.get("visualize_epoch") or []
 
-GROUP_COLORS = {"input": "steelblue", "hidden": "mediumseagreen"}
-
-last_epoch_data = {}   # run_label -> (epoch_idx, data)
-
-for run_label, run_dir, _ in RUNS:
-    epochs = _load_all_epochs(run_dir)
-    if not epochs:
+    epoch_files = sorted(glob_mod.glob(os.path.join(run_dir, "history_epoch_*.npz")))
+    if not epoch_files:
         print(f"  [skip] No epoch files in {run_dir}")
-        continue
+        return
 
-    last_epoch_idx, last_data = epochs[-1]
-    last_epoch_data[run_label] = (last_epoch_idx, last_data)
+    n_epochs      = len(epoch_files)
+    epochs_to_viz = ([e for e in visualize_epoch if e < n_epochs]
+                     if visualize_epoch else list(range(n_epochs)))
 
-    for epoch_idx, data in epochs:
-        keys     = set(data.files)
-        n_total  = 0
+    for epoch_idx, npz_path in enumerate(epoch_files):
+        if epoch_idx not in epochs_to_viz:
+            continue
+        print(f"\n  Epoch {epoch_idx} — {os.path.basename(npz_path)}")
+        data = np.load(npz_path, allow_pickle=True)
+        keys = set(data.files)
 
-        # find number of recorded samples from any group
-        for gname in group_viz:
+        n_samples = 0
+        for gname in group_cfg:
             if _has(keys, gname, "raster_n_samples"):
-                n_total = int(_get(data, gname, "raster_n_samples"))
+                n_samples = int(_get(data, gname, "raster_n_samples"))
                 break
 
-        sample_idxs = _sample_indices(n_total)
+        sample_idxs = ([s for s in visualize_samples if s < n_samples]
+                       if visualize_samples else list(range(n_samples)))
 
-        for gname, gcfg in group_viz.items():
-            if not gcfg.get("spike_raster"):
-                continue
-            color = GROUP_COLORS.get(gname, "mediumpurple")
-            _plot_spike_raster(data, keys, gname, epoch_idx,
-                               sample_idxs, color, OUT_RASTERS, run_label)
-
-# ── Side-by-side hidden raster comparison (last epoch, sample 0) ──────────────
-
-has_both = ("3sample" in last_epoch_data and "1sample" in last_epoch_data)
-if has_both and group_viz.get("hidden", {}).get("spike_raster"):
-    e3, d3 = last_epoch_data["3sample"]
-    e1, d1 = last_epoch_data["1sample"]
-    keys3, keys1 = set(d3.files), set(d1.files)
-
-    if (_has(keys3, "hidden", "raster_i") and _has(keys1, "hidden", "raster_i")):
-        n3 = int(_get(d3, "hidden", "raster_n_samples"))
-        n1 = int(_get(d1, "hidden", "raster_n_samples"))
-
-        for s in [0]:   # compare sample 0 only
-            if s >= n3 or s >= n1:
-                continue
-
-            sp_i3 = d3[_k("hidden", "raster_i")][s]
-            sp_t3 = d3[_k("hidden", "raster_t")][s]
-            sp_i1 = d1[_k("hidden", "raster_i")][s]
-            sp_t1 = d1[_k("hidden", "raster_t")][s]
-            n_neurons = int(_get(d3, "hidden", "raster_n_neurons"))
-
-            fig, axes = plt.subplots(2, 1, figsize=(13, 8), sharex=True, sharey=True)
-            fig.suptitle(
-                f"Hidden raster comparison — sample {s}\n"
-                f"(3-sample: epoch {e3}, 1-sample: epoch {e1})",
-                fontsize=12, fontweight="bold",
-            )
-            for ax, sp_i, sp_t, color, lbl, n_sp in [
-                (axes[0], sp_i3, sp_t3, "mediumseagreen",
-                 f"3-sample fingerprint  ({len(sp_t3):,} spikes)", n_neurons),
-                (axes[1], sp_i1, sp_t1, "darkorange",
-                 f"1-sample fingerprint  ({len(sp_t1):,} spikes)", n_neurons),
-            ]:
-                if len(sp_t) > 0:
-                    ax.scatter(sp_t, sp_i, s=0.5, c=color, linewidths=0, rasterized=True)
-                ax.set_title(lbl, fontsize=10)
-                ax.set_ylabel("Hidden neuron index")
-                ax.set_ylim(-0.5, n_sp - 0.5)
-                ax.grid(True, alpha=0.2)
-            axes[-1].set_xlabel("Time (ms)")
-            plt.tight_layout()
-            _save(fig, os.path.join(OUT_RASTERS, f"compare_hidden_sample{s:03d}.png"))
+        for name, gcfg in group_cfg.items():
+            if gcfg.get("spike_raster"):
+                color = GROUP_COLORS.get(name, "mediumpurple")
+                _plot_spike_raster(data, keys, name, epoch_idx,
+                                   sample_idxs, color, out_base)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Load fingerprints for comparison plots
+# Visualize both runs
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("\n=== Visualizing Run A ===")
+visualize_run("A", DIR_A, viz_cfg_A, OUT_A)
+
+print("\n=== Visualizing Run B ===")
+visualize_run("B", DIR_B, viz_cfg_B, OUT_B)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fingerprint comparison
 # ─────────────────────────────────────────────────────────────────────────────
 
 if not os.path.exists(FP_PATH):
@@ -242,21 +187,24 @@ if not os.path.exists(FP_PATH):
     print(f"\n{len(saved)} PNG(s) saved to: {OUT_DIR}")
     sys.exit(0)
 
+os.makedirs(OUT_FP, exist_ok=True)
+
 fp_data = np.load(FP_PATH, allow_pickle=True)
-fp3     = fp_data["fingerprint_3"].astype(np.float64)
-fp1     = fp_data["fingerprint_1"].astype(np.float64)
-diff    = fp3 - fp1
-N_IN, N_H = fp3.shape
-print(f"\nLoaded fingerprints: shape={fp3.shape}")
+fp_A    = fp_data["fingerprint_A"].astype(np.float64)
+fp_B    = fp_data["fingerprint_B"].astype(np.float64)
+diff    = fp_A - fp_B
+N_IN, N_H = fp_A.shape
+print(f"\nLoaded fingerprints: shape={fp_A.shape}")
 
 
 def _save_fp(fig, name):
-    _save(fig, os.path.join(OUT_DIR, name))
+    _save(fig, os.path.join(OUT_FP, name))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2.  Per-neuron incoming weight plots
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Per-neuron incoming weight plots ──────────────────────────────────────────
+# Neuron IDs come from visualize_A's weights_per_neuron config.
+
+weights_per_neuron = viz_cfg_A.get("weights_per_neuron", {}) or {}
 
 for syn_name, neuron_ids in weights_per_neuron.items():
     for nid in (neuron_ids or []):
@@ -264,10 +212,10 @@ for syn_name, neuron_ids in weights_per_neuron.items():
         if nid >= N_H:
             continue
 
-        w3 = fp3[:, nid]
-        w1 = fp1[:, nid]
-        d  = w3 - w1
-        x  = np.arange(N_IN)
+        w_A = fp_A[:, nid]
+        w_B = fp_B[:, nid]
+        d   = w_A - w_B
+        x   = np.arange(N_IN)
 
         fig = plt.figure(figsize=(15, 9))
         gs  = gridspec.GridSpec(3, 2, figure=fig, hspace=0.45, wspace=0.3)
@@ -275,8 +223,9 @@ for syn_name, neuron_ids in weights_per_neuron.items():
                      fontsize=13, fontweight="bold")
 
         ax0 = fig.add_subplot(gs[0, :])
-        ax0.bar(x, w3, width=1.0, color="steelblue",  linewidth=0, label="3-sample fp")
-        ax0.bar(x, w1, width=1.0, color="darkorange", linewidth=0, alpha=0.7, label="1-sample fp")
+        ax0.bar(x, w_A, width=1.0, color="steelblue",  linewidth=0, label="Run A fp")
+        ax0.bar(x, w_B, width=1.0, color="darkorange", linewidth=0, alpha=0.7,
+                label="Run B fp")
         ax0.set_title("Incoming weights (overlaid)", fontsize=11)
         ax0.set_xlabel("Input neuron index")
         ax0.set_ylabel("Weight")
@@ -288,15 +237,17 @@ for syn_name, neuron_ids in weights_per_neuron.items():
         ax1 = fig.add_subplot(gs[1, :])
         ax1.bar(x, d, width=1.0, color=colors_d, linewidth=0)
         ax1.axhline(0, color="black", lw=0.8, ls="--", alpha=0.6)
-        ax1.set_title("Difference  (3-sample − 1-sample)", fontsize=11)
+        ax1.set_title("Difference  (A − B)", fontsize=11)
         ax1.set_xlabel("Input neuron index")
         ax1.set_ylabel("Δ weight")
         ax1.set_xlim(-0.5, N_IN - 0.5)
         ax1.grid(True, axis="y", alpha=0.3)
 
         ax2 = fig.add_subplot(gs[2, 0])
-        ax2.hist(w3[w3 > 0], bins=40, color="steelblue",  alpha=0.7, label="3-sample", density=True)
-        ax2.hist(w1[w1 > 0], bins=40, color="darkorange", alpha=0.7, label="1-sample", density=True)
+        ax2.hist(w_A[w_A > 0], bins=40, color="steelblue",  alpha=0.7,
+                 label="Run A", density=True)
+        ax2.hist(w_B[w_B > 0], bins=40, color="darkorange", alpha=0.7,
+                 label="Run B", density=True)
         ax2.set_title("Weight distribution (non-zero)", fontsize=10)
         ax2.set_xlabel("Weight value")
         ax2.set_ylabel("Density")
@@ -311,21 +262,18 @@ for syn_name, neuron_ids in weights_per_neuron.items():
         ax3.set_ylabel("Density")
         ax3.grid(True, alpha=0.3)
 
-        r, p = stats.pearsonr(w3, w1)
+        r, p = stats.pearsonr(w_A, w_B)
         l2   = float(np.linalg.norm(d))
         fig.text(0.5, 0.01,
-                 f"neuron {nid} — L2 distance: {l2:.5f}   Pearson r: {r:.5f}  (p={p:.3g})",
+                 f"neuron {nid} — L2: {l2:.5f}   Pearson r: {r:.5f}  (p={p:.3g})",
                  ha="center", fontsize=10, color="dimgray")
-
         _save_fp(fig, f"neuron_{nid:04d}_weights.png")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3.  Difference heatmap
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Difference heatmap ────────────────────────────────────────────────────────
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-fig.suptitle("Fingerprint difference  fp3 − fp1", fontsize=13, fontweight="bold")
+fig.suptitle("Fingerprint difference  fp_A − fp_B", fontsize=13, fontweight="bold")
 
 vabs = np.abs(diff).max()
 im0  = axes[0].imshow(diff, aspect="auto", interpolation="nearest",
@@ -333,22 +281,20 @@ im0  = axes[0].imshow(diff, aspect="auto", interpolation="nearest",
 axes[0].set_title("Signed difference matrix")
 axes[0].set_xlabel("Hidden neuron index")
 axes[0].set_ylabel("Input neuron index")
-plt.colorbar(im0, ax=axes[0], label="fp3 − fp1")
+plt.colorbar(im0, ax=axes[0], label="fp_A − fp_B")
 
 im1  = axes[1].imshow(np.abs(diff), aspect="auto", interpolation="nearest",
                       cmap="hot_r", vmin=0, origin="lower")
 axes[1].set_title("|difference| matrix")
 axes[1].set_xlabel("Hidden neuron index")
 axes[1].set_ylabel("Input neuron index")
-plt.colorbar(im1, ax=axes[1], label="|fp3 − fp1|")
+plt.colorbar(im1, ax=axes[1], label="|fp_A − fp_B|")
 
 plt.tight_layout()
 _save_fp(fig, "difference_heatmap.png")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4.  Per-neuron L2 distance
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Per-neuron L2 distance ────────────────────────────────────────────────────
 
 l2_per_neuron = np.linalg.norm(diff, axis=0)
 
@@ -356,7 +302,7 @@ fig, ax = plt.subplots(figsize=(13, 4))
 ax.bar(np.arange(N_H), l2_per_neuron, width=1.0, color="steelblue", linewidth=0)
 ax.axhline(l2_per_neuron.mean(), color="crimson", lw=1.2, ls="--",
            label=f"mean = {l2_per_neuron.mean():.5f}")
-ax.set_title("Per-hidden-neuron L2 distance  ||fp3[:,n] − fp1[:,n]||₂",
+ax.set_title("Per-hidden-neuron L2 distance  ||fp_A[:,n] − fp_B[:,n]||₂",
              fontsize=12, fontweight="bold")
 ax.set_xlabel("Hidden neuron index")
 ax.set_ylabel("L2 distance")
@@ -367,21 +313,19 @@ plt.tight_layout()
 _save_fp(fig, "per_neuron_l2.png")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5.  Histogram of element-wise differences
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Element-wise difference histogram ────────────────────────────────────────
 
 flat_diff = diff.flatten()
 
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
-fig.suptitle("Element-wise difference distribution  (fp3 − fp1)",
+fig.suptitle("Element-wise difference distribution  (fp_A − fp_B)",
              fontsize=12, fontweight="bold")
 
 axes[0].hist(flat_diff, bins=100, color="mediumpurple", edgecolor="none", density=True)
 axes[0].axvline(0, color="black", lw=1.0, ls="--", label="0")
 axes[0].axvline(flat_diff.mean(), color="crimson", lw=1.0, ls="-",
                 label=f"mean={flat_diff.mean():.5f}")
-axes[0].set_xlabel("fp3 − fp1")
+axes[0].set_xlabel("fp_A − fp_B")
 axes[0].set_ylabel("Density")
 axes[0].set_title("Full range")
 axes[0].legend(fontsize=8)
@@ -391,7 +335,7 @@ p1, p99 = np.percentile(flat_diff, [1, 99])
 mask = (flat_diff >= p1) & (flat_diff <= p99)
 axes[1].hist(flat_diff[mask], bins=80, color="mediumpurple", edgecolor="none", density=True)
 axes[1].axvline(0, color="black", lw=1.0, ls="--")
-axes[1].set_xlabel("fp3 − fp1")
+axes[1].set_xlabel("fp_A − fp_B")
 axes[1].set_ylabel("Density")
 axes[1].set_title("Central 98 % (p1–p99)")
 axes[1].grid(True, alpha=0.3)
@@ -400,16 +344,14 @@ plt.tight_layout()
 _save_fp(fig, "difference_histogram.png")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6.  Per-neuron Pearson correlation
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Per-neuron Pearson correlation ────────────────────────────────────────────
 
 pearson_r = np.array([
-    stats.pearsonr(fp3[:, n], fp1[:, n])[0] for n in range(N_H)
+    stats.pearsonr(fp_A[:, n], fp_B[:, n])[0] for n in range(N_H)
 ])
 
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
-fig.suptitle("Per-hidden-neuron Pearson correlation  r(fp3[:,n], fp1[:,n])",
+fig.suptitle("Per-hidden-neuron Pearson correlation  r(fp_A[:,n], fp_B[:,n])",
              fontsize=12, fontweight="bold")
 
 axes[0].hist(pearson_r, bins=60, color="mediumseagreen", edgecolor="none", density=True)
@@ -436,28 +378,26 @@ plt.tight_layout()
 _save_fp(fig, "per_neuron_pearson.png")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7.  Statistical summary
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Statistical summary ───────────────────────────────────────────────────────
 
 frob_abs = float(np.linalg.norm(diff, "fro"))
-frob_fp3 = float(np.linalg.norm(fp3,  "fro"))
-frob_rel = frob_abs / frob_fp3 if frob_fp3 > 0 else float("nan")
+frob_fpA = float(np.linalg.norm(fp_A,  "fro"))
+frob_rel = frob_abs / frob_fpA if frob_fpA > 0 else float("nan")
 
 wilcox_stat, wilcox_p = stats.wilcoxon(flat_diff)
 
 lines = [
     "=" * 60,
-    "CONVERGENCE PROOF — STATISTICAL SUMMARY",
+    "FINGERPRINT COMPARISON — STATISTICAL SUMMARY",
     "=" * 60,
     "",
-    f"Fingerprint shape          : {fp3.shape}",
-    f"3-sample training          : {fp_data['collected_3'].shape[0]} weight matrices averaged",
-    f"1-sample training          : {fp_data['collected_1'].shape[0]} weight matrices averaged",
+    f"Fingerprint shape          : {fp_A.shape}",
+    f"Run A training             : {fp_data['collected_A'].shape[0]} weight matrices averaged",
+    f"Run B training             : {fp_data['collected_B'].shape[0]} weight matrices averaged",
     "",
     "── Difference metrics ──────────────────────────────────────",
-    f"Frobenius norm |fp3-fp1|   : {frob_abs:.6f}",
-    f"Frobenius norm |fp3|       : {frob_fp3:.6f}",
+    f"Frobenius norm |fp_A-fp_B| : {frob_abs:.6f}",
+    f"Frobenius norm |fp_A|      : {frob_fpA:.6f}",
     f"Relative error             : {frob_rel:.4%}",
     "",
     "── Per-neuron L2 distance ──────────────────────────────────",
@@ -489,10 +429,9 @@ lines = [
 summary = "\n".join(lines)
 print(f"\n{summary}")
 
-stats_path = os.path.join(OUT_DIR, "stats.txt")
+stats_path = os.path.join(OUT_FP, "stats.txt")
 with open(stats_path, "w") as f:
     f.write(summary + "\n")
 print(f"\n  Stats saved → {os.path.relpath(stats_path, SCRIPT_DIR)}")
 
-# ─────────────────────────────────────────────────────────────────────────────
 print(f"\n{len(saved)} PNG(s) saved to: {OUT_DIR}")

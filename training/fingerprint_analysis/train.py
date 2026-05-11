@@ -1,32 +1,30 @@
 """
-convergence_proof/train.py
-==========================
-Proves that training on 1 sample repeated N times produces the same learned
-fingerprint as training on 3 distinct samples for EPOCHS epochs (same total).
+fingerprint_analysis/train.py
+==============================
+Trains two independent runs (A and B) on their respective wav-file sets and
+compares the resulting converged weight fingerprints.
 
-Mode A (3-sample): WAV_FILES_3  × EPOCHS      epochs
-Mode B (1-sample): WAV_FILES_1  × EPOCHS * 3  epochs
+Run A: WAV_FILES_A  × record_A.epochs
+Run B: WAV_FILES_B  × record_B.epochs
 
-Spike rasters and firing rates are recorded by the Recorder class, driven by
-record_and_visualize_config.yaml.  Each run saves its epoch history to its own
-subdirectory (run_3sample/ and run_1sample/).
+Training knobs (epochs, sample_from_epoch) are read from
+record_and_visualize_config.yaml so everything is in one place.
 
 Fingerprint extraction:
-  Starting from collect_from_epoch (0-indexed), weight matrices are saved after
-  every sample presentation and averaged → fingerprint.
-  For 3-sample: collect_from = SAMPLE_FROM_EPOCH
-  For 1-sample: collect_from = SAMPLE_FROM_EPOCH * 3  (equivalent training point)
+  Starting from record_X.sample_from_epoch (0-indexed), weight matrices are
+  saved after every sample presentation and averaged → fingerprint.
 
 Output:
-  run_3sample/history_epoch_*.npz  — full recorder data (rasters, weights, …)
-  run_1sample/history_epoch_*.npz  — same for 1-sample run
-  fingerprints.npz                 — averaged fingerprints + collected matrices
+  run_A/history_epoch_*.npz  — full recorder data (rasters, weights, …)
+  run_B/history_epoch_*.npz  — same for run B
+  fingerprints.npz            — averaged fingerprints + collected matrices
 """
 
 import numpy as np
 import os
 import sys
 import time
+import yaml
 
 from brian2 import *
 
@@ -42,22 +40,29 @@ from src.recorder import Recorder
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "record_and_visualize_config.yaml")
 
-EPOCHS            = 4   # epochs for the 3-sample version; 1-sample runs EPOCHS*3
-SAMPLE_FROM_EPOCH = 2   # 0-indexed; start collecting weights from this epoch
+with open(CONFIG_PATH) as _f:
+    _cfg = yaml.safe_load(_f)
+
+EPOCHS_A            = _cfg["record_A"]["epochs"]
+SAMPLE_FROM_EPOCH_A = _cfg["record_A"]["sample_from_epoch"]
+EPOCHS_B            = _cfg["record_B"]["epochs"]
+SAMPLE_FROM_EPOCH_B = _cfg["record_B"]["sample_from_epoch"]
 
 # ── Dataset paths ─────────────────────────────────────────────────────────────
-WAV_FILES_3 = [
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00004/00002.wav",
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00004/00003.wav",
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00004/00004.wav",
+# Add or remove wav files freely; each list can hold any number of files.
+
+WAV_FILES_A = [
+    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00003.wav",
+    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00004.wav",
 ]
 
-WAV_FILES_1 = [
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00004/00001.wav",
+WAV_FILES_B = [
+    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00001.wav",
+    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00002.wav"
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Network hyperparameters  (must match training/fingerprint_analysis/train.py)
+# Network hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
 
 N_IN = 700
@@ -104,22 +109,24 @@ W_INIT = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
 # Training function
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train_run(wav_files, num_epochs, collect_from_epoch, label, save_dir):
+def train_run(wav_files, num_epochs, collect_from_epoch, label, save_dir,
+              record_section):
     """
     Build a fresh Brian2 SNN, train on wav_files for num_epochs.
 
-    The Recorder handles spike rasters and firing rates, driven by
-    record_and_visualize_config.yaml.  Epoch data is saved to save_dir.
+    The Recorder handles spike rasters, driven by record_and_visualize_config.yaml
+    using the given record_section.  Epoch data is saved to save_dir.
 
     Weight matrices are collected after each sample once epoch >= collect_from_epoch.
     Returns (fingerprint, list_of_collected_weight_matrices).
     """
     print(f"\n{'='*60}")
     print(f"  {label}")
-    print(f"  wav files    : {len(wav_files)}")
-    print(f"  num_epochs   : {num_epochs}")
-    print(f"  collect from : epoch {collect_from_epoch}")
-    print(f"  save_dir     : {os.path.relpath(save_dir)}")
+    print(f"  config section : {record_section}")
+    print(f"  wav files      : {len(wav_files)}")
+    print(f"  num_epochs     : {num_epochs}")
+    print(f"  collect from   : epoch {collect_from_epoch}")
+    print(f"  save_dir       : {os.path.relpath(save_dir)}")
     print(f"{'='*60}")
 
     t0   = time.time()
@@ -187,7 +194,7 @@ def train_run(wav_files, num_epochs, collect_from_epoch, label, save_dir):
     G_h.vth = vth_init
 
     # ── Recorder setup ────────────────────────────────────────────────────────
-    recorder = Recorder(CONFIG_PATH, net)
+    recorder = Recorder(CONFIG_PATH, net, record_section=record_section)
     recorder.track_group("input",  G_in)
     recorder.track_group("hidden", G_h)
     recorder.track_synapses("in->hid", S_ih, src_ih, tgt_ih)
@@ -263,16 +270,18 @@ def train_run(wav_files, num_epochs, collect_from_epoch, label, save_dir):
 
 start = time.time()
 
-fp3, coll3 = train_run(
-    WAV_FILES_3, EPOCHS, SAMPLE_FROM_EPOCH,
-    label    = "Mode A — 3-sample",
-    save_dir = os.path.join(SCRIPT_DIR, "run_3sample"),
+fp_A, coll_A = train_run(
+    WAV_FILES_A, EPOCHS_A, SAMPLE_FROM_EPOCH_A,
+    label          = "Run A",
+    save_dir       = os.path.join(SCRIPT_DIR, "run_A"),
+    record_section = "record_A",
 )
 
-fp1, coll1 = train_run(
-    WAV_FILES_1, EPOCHS * 3, SAMPLE_FROM_EPOCH * 3,
-    label    = "Mode B — 1-sample",
-    save_dir = os.path.join(SCRIPT_DIR, "run_1sample"),
+fp_B, coll_B = train_run(
+    WAV_FILES_B, EPOCHS_B, SAMPLE_FROM_EPOCH_B,
+    label          = "Run B",
+    save_dir       = os.path.join(SCRIPT_DIR, "run_B"),
+    record_section = "record_B",
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,15 +292,15 @@ out_path = os.path.join(SCRIPT_DIR, "fingerprints.npz")
 
 np.savez(
     out_path,
-    fingerprint_3 = fp3,
-    fingerprint_1 = fp1,
-    collected_3   = np.array(coll3),
-    collected_1   = np.array(coll1),
+    fingerprint_A = fp_A,
+    fingerprint_B = fp_B,
+    collected_A   = np.array(coll_A),
+    collected_B   = np.array(coll_B),
 )
 
 print(f"\n{'='*60}")
 print(f"Saved → {out_path}")
-print(f"  fingerprint_3 : {fp3.shape}  range [{fp3.min():.4f}, {fp3.max():.4f}]")
-print(f"  fingerprint_1 : {fp1.shape}  range [{fp1.min():.4f}, {fp1.max():.4f}]")
+print(f"  fingerprint_A : {fp_A.shape}  range [{fp_A.min():.4f}, {fp_A.max():.4f}]")
+print(f"  fingerprint_B : {fp_B.shape}  range [{fp_B.min():.4f}, {fp_B.max():.4f}]")
 print(f"  Total time    : {time.time() - start:.1f}s")
 print(f"{'='*60}")

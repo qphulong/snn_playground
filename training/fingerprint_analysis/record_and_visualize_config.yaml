@@ -1,16 +1,23 @@
 # ============================================================
 # record_and_visualize_config.yaml
 #
-# record:    drives Recorder  — what Brian2 data to collect
-# visualize: drives visualize.py — what plots to produce
+# Four independent sections:
+#   record_A    — what Brian2 data to collect during run A
+#   visualize_A — what plots to produce for run A
+#   record_B    — what Brian2 data to collect during run B
+#   visualize_B — what plots to produce for run B
 #
-# The two sections are fully independent.
+# Training knobs (epochs, sample_from_epoch) live in the
+# record sections so all run parameters are in one place.
 # ============================================================
 
 
-# ── Recording configuration ───────────────────────────────────────────────────
+# ── Run A ─────────────────────────────────────────────────────────────────────
 
-record:
+record_A:
+
+  epochs:             8
+  sample_from_epoch:  6
 
   snapshot_interval_ms: 500
 
@@ -31,16 +38,15 @@ record:
   synapses:
 
     in->hid:
-      weights_evolution:        []   # no per-step snapshotting
+      weights_evolution:        []
       final_weights_per_sample: false
 
 
-# ── Visualization configuration ───────────────────────────────────────────────
+visualize_A:
 
-visualize:
-
-  # Which samples to plot per run (empty = all)
-  visualize_samples: []
+  visualize_samples: []   # empty = all samples
+  visualize_epoch:   []   # empty = all epochs
+  track_weight_delta: false
 
   groups:
 
@@ -57,8 +63,62 @@ visualize:
     in->hid:
       final_weights_per_sample: false
 
-  # ── Per-neuron incoming weight plots ────────────────────────────────────────
-  # Add or remove neuron indices freely.
+  weights_per_neuron:
+    in->hid:
+      - 100
+      - 350
+
+
+# ── Run B ─────────────────────────────────────────────────────────────────────
+
+record_B:
+
+  epochs:             8
+  sample_from_epoch:  6
+
+  snapshot_interval_ms: 500
+
+  groups:
+
+    input:
+      spike_raster:       true
+      mean_firing_rate:   false
+      membrane_potential: []
+      membrane_potential_variables: ["v"]
+
+    hidden:
+      spike_raster:       true
+      mean_firing_rate:   false
+      membrane_potential: []
+      membrane_potential_variables: ["v", "vth"]
+
+  synapses:
+
+    in->hid:
+      weights_evolution:        []
+      final_weights_per_sample: false
+
+
+visualize_B:
+
+  visualize_samples: []
+  visualize_epoch:   []
+  track_weight_delta: false
+
+  groups:
+
+    input:
+      spike_raster:     true
+      mean_firing_rate: false
+
+    hidden:
+      spike_raster:     true
+      mean_firing_rate: false
+
+  synapses:
+
+    in->hid:
+      final_weights_per_sample: false
 
   weights_per_neuron:
     in->hid:
