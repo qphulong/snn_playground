@@ -28,7 +28,7 @@ import yaml
 
 from brian2 import *
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
 from src.utils.weights_utils import gaussian_weight_matrix, l1_normalise_weights
 from src.recorder import Recorder
@@ -52,13 +52,13 @@ SAMPLE_FROM_EPOCH_B = _cfg["record_B"]["sample_from_epoch"]
 # Add or remove wav files freely; each list can hold any number of files.
 
 WAV_FILES_A = [
-    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00003.wav",
-    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00004.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00002/00003.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00002/00004.wav",
 ]
 
 WAV_FILES_B = [
-    "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00003.wav",
-    "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00004.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00002/00001.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00002/00001.wav",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
