@@ -56,7 +56,7 @@ class Recorder:
         recorder.reset_epoch()
     """
 
-    def __init__(self, config_path, net):
+    def __init__(self, config_path, net, record_section="record"):
         self._net      = net
         self._groups   = {}   # name -> {group, cfg, mon, _spike_baseline}
         self._synapses = {}   # name -> {syn, src, tgt, cfg, mon}
@@ -65,9 +65,9 @@ class Recorder:
         with open(config_path) as f:
             raw = yaml.safe_load(f)
 
-        # Support both the new record_and_visualize_config.yaml (with a
-        # top-level "record:" section) and the legacy flat format.
-        self._cfg = raw.get("record", raw)
+        # Support named sections (e.g. "record_A", "record_B") as well as the
+        # legacy flat format and the single "record:" section format.
+        self._cfg = raw.get(record_section, raw.get("record", raw))
 
         self._snapshot_interval = self._cfg.get("snapshot_interval_ms", 500) * ms
 
