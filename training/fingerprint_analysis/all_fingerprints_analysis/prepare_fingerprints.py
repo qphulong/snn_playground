@@ -50,7 +50,7 @@ from brian2 import (
     start_scope, defaultclock, ms,
 )
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
 from src.utils.weights_utils import gaussian_weight_matrix, l1_normalise_weights
 
@@ -59,7 +59,7 @@ from src.utils.weights_utils import gaussian_weight_matrix, l1_normalise_weights
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT    = os.path.join(SCRIPT_DIR, '..', '..')
+REPO_ROOT    = os.path.join(SCRIPT_DIR, '..', '..', '..')
 DATASET_ROOT = os.path.join(REPO_ROOT, 'datasets', 'vox1_fingerprint_analysis')
 OUT_PATH     = os.path.join(SCRIPT_DIR, 'fingerprints.npz')
 
