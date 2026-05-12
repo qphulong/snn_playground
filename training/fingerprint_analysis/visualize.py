@@ -672,25 +672,6 @@ plt.tight_layout()
 _save_fp(fig, "difference_heatmap.png")
 
 
-# ── Per-neuron L2 distance ────────────────────────────────────────────────────
-
-l2_per_neuron = np.linalg.norm(diff, axis=0)
-
-fig, ax = plt.subplots(figsize=(13, 4))
-ax.bar(np.arange(N_H), l2_per_neuron, width=1.0, color="steelblue", linewidth=0)
-ax.axhline(l2_per_neuron.mean(), color="crimson", lw=1.2, ls="--",
-           label=f"mean = {l2_per_neuron.mean():.5f}")
-ax.set_title("Per-hidden-neuron L2 distance  ||fp_A[:,n] − fp_B[:,n]||₂",
-             fontsize=12, fontweight="bold")
-ax.set_xlabel("Hidden neuron index")
-ax.set_ylabel("L2 distance")
-ax.set_xlim(-0.5, N_H - 0.5)
-ax.legend(fontsize=9)
-ax.grid(True, axis="y", alpha=0.3)
-plt.tight_layout()
-_save_fp(fig, "per_neuron_l2.png")
-
-
 # ── Element-wise difference histogram ────────────────────────────────────────
 
 flat_diff = diff.flatten()
@@ -777,11 +758,6 @@ lines = [
     f"Frobenius norm |fp_A-fp_B| : {frob_abs:.6f}",
     f"Frobenius norm |fp_A|      : {frob_fpA:.6f}",
     f"Relative error             : {frob_rel:.4%}",
-    "",
-    "── Per-neuron L2 distance ──────────────────────────────────",
-    f"Mean L2 per neuron         : {l2_per_neuron.mean():.6f}",
-    f"Median L2 per neuron       : {np.median(l2_per_neuron):.6f}",
-    f"Max L2 per neuron          : {l2_per_neuron.max():.6f}",
     "",
     "── Per-neuron Pearson correlation ──────────────────────────",
     f"Mean Pearson r             : {pearson_r.mean():.6f}",

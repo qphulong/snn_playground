@@ -52,13 +52,13 @@ SAMPLE_FROM_EPOCH_B = _cfg["record_B"]["sample_from_epoch"]
 # Add or remove wav files freely; each list can hold any number of files.
 
 WAV_FILES_A = [
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00003.wav",
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00004.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00003.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00009/00004.wav",
 ]
 
 WAV_FILES_B = [
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00001.wav",
-    "datasets/vox1_fingerprint_analysis/id10340/id10340_00006/00002.wav"
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00003.wav",
+    "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00004.wav",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
