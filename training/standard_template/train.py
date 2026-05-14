@@ -49,8 +49,8 @@ vth_jump = 0.3
 # -- STDP --
 taupre      = 20 * ms
 taupost     = 20 * ms
-Apre_delta  =  0.0001
-Apost_delta = -0.00012
+Apre_delta  =  0.004
+Apost_delta = -0.0048
 
 # -- Synaptic weight bounds --
 wmax = 1.0
@@ -91,9 +91,6 @@ defaultclock.dt = DT_SIM
 # net.store/restore resets the Brian2 clock to 0 before every sample, so
 # I_timed(t, i) always indexes from the beginning of the array.
 # Do not call start_scope() or rebuild the network inside the sample loop.
-_dummy_I = np.zeros((1, N_IN), dtype=float)
-I_timed  = TimedArray(_dummy_I, dt=DT_SIM)
-
 eqs_in = """
 dv/dt = (-v - a) / tau_m + I_timed(t, i) / tau_current : 1
 da/dt = -a / tau_a : 1
@@ -105,6 +102,9 @@ G_in = NeuronGroup(
     refractory=2 * ms,
     method="euler"
 )
+
+_dummy_I = np.zeros((1, N_IN), dtype=float)
+G_in.namespace["I_timed"] = TimedArray(_dummy_I, dt=DT_SIM)
 
 # ── Hidden neurons ────────────────────────────────────────────────────────────
 #
