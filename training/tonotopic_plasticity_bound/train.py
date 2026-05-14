@@ -20,7 +20,7 @@ start = time.time()
 wav_files = sorted(glob.glob("datasets/vox1_single_person_nano_2/dev/*.wav", recursive=True))
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 1
+EPOCHS   = 8
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -49,12 +49,17 @@ vth_jump = 0.3
 # -- STDP --
 taupre      = 20 * ms
 taupost     = 20 * ms
-Apre_delta  =  0.004
-Apost_delta = -0.0048
 
 # -- Synaptic weight bounds --
-wmax = 1.0
 wmin = 0.0
+
+# -- Tonotopic plasticity bounds (circular Gaussian) --
+# At distance-0 (same index) these are the full values.
+# They decay to ~0 at maximum circular distance.
+WMAX_CENTER  = 1.0
+APRE_CENTER  =  0.004
+APOST_CENTER = -0.0048
+PLAST_SIGMA  = N_IN / 5   # same spread as weight initialisation
 
 # -- Weight initialisation (Gaussian, toroidal topology) --
 W_INIT_SIGMA     = N_IN / 5
@@ -74,11 +79,32 @@ NORM_LIMIT = 2
 # ============================================================
 
 w_ih = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
-                               W_INIT_SUM, wmin, wmax)
+                               W_INIT_SUM, wmin, WMAX_CENTER)
 # example for a second synapse group:
 # w_ho = np.random.uniform(wmin, wmax, size=(N_H, N_OUT))
 
 init_weights = {"in->hid": w_ih.copy()}
+
+# ============================================================
+# Pre-compute tonotopic plasticity bound matrices
+#
+# For synapse i→j:
+#   d_ij  = min(|i-j|, N_IN-|i-j|)          circular distance
+#   g_ij  = exp(-d_ij² / (2·PLAST_SIGMA²))   ∈ (0,1], peak at d=0
+#   wmax_matrix[i,j]  = WMAX_CENTER  · g_ij
+#   Apre_matrix[i,j]  = APRE_CENTER  · g_ij
+#   Apost_matrix[i,j] = APOST_CENTER · g_ij  (negative, → 0 from below)
+# ============================================================
+
+_i    = np.arange(N_IN).reshape(-1, 1)
+_j    = np.arange(N_H).reshape(1, -1)
+_dist = np.abs(_i - _j)
+_dist = np.minimum(_dist, N_IN - _dist)
+_gauss = np.exp(-(_dist ** 2) / (2 * PLAST_SIGMA ** 2))
+
+wmax_matrix  = WMAX_CENTER  * _gauss
+Apre_matrix  = APRE_CENTER  * _gauss
+Apost_matrix = APOST_CENTER * _gauss
 
 
 # ============================================================
@@ -134,15 +160,21 @@ stdp_model = """
 w          : 1
 dapre/dt   = -apre  / taupre  : 1 (event-driven)
 dapost/dt  = -apost / taupost : 1 (event-driven)
+wmax_syn   : 1
+Apre_syn   : 1
+Apost_syn  : 1
 """
-# TODO: edit update equations here
-on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost*(w-wmin), wmin, wmax)"
-on_post = "apost += Apost_delta\nw = clip(w + apre*(wmax-w), wmin, wmax)"
+on_pre  = "v_post += w\napre += Apre_syn\nw = clip(w + apost*(w-wmin), wmin, wmax_syn)"
+on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
 
 S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
 S_ih.connect()
 src_ih = np.array(S_ih.i)
 tgt_ih = np.array(S_ih.j)
+
+S_ih.wmax_syn  = wmax_matrix[src_ih, tgt_ih]
+S_ih.Apre_syn  = Apre_matrix[src_ih, tgt_ih]
+S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
 
 # ── Lateral inhibition ────────────────────────────────────────────────────────
 lat = Synapses(G_h, G_h, on_pre="v_post = clip(v_post, 0, inf)")
@@ -278,7 +310,7 @@ for epoch_idx in range(EPOCHS):
         # not in the recorder. Use recorder.spikes_this_sample(name) to get
         # the spike indices for any registered group without touching monitors.
         spiked_hidden = np.unique(recorder.spikes_this_sample("hidden"))
-        w_ih = l1_normalise_weights(w_ih_new, spiked_hidden, NORM_LIMIT, wmin, wmax)
+        w_ih = l1_normalise_weights(w_ih_new, spiked_hidden, NORM_LIMIT, wmin, WMAX_CENTER)
         # Example custom normalisation for a second synapse group:
         # spiked_output = np.unique(recorder.spikes_this_sample("output"))
         # w_ho = normalise_weights(w_ho_new, spiked_output, NORM_LIMIT, wmin, wmax)
