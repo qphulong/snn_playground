@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
-from src.utils.weights_utils import gaussian_weight_matrix, l1_normalise_weights
+from src.utils.weights_utils import gaussian_weight_matrix
 from src.recorder import Recorder
 
 import time
@@ -53,20 +53,36 @@ vth_rest = 0.8
 vth_init = 0.8
 vth_jump = 0.3
 
-# -- STDP --
-taupre      = 20 * ms
-taupost     = 20 * ms
+# -- Soft refractory (hidden only; replaces hard refractory) --
+tau_r = 10 * ms
 
-# -- Synaptic weight bounds --
+# -- Membrane noise (hidden only) --
+# sigma_noise has units second**(-0.5) so sigma_noise*xi has units 1/second,
+# matching dv/dt for a dimensionless variable.
+sigma_noise = 0.03 * second**(-0.5)
+
+# -- STDP (excitatory) --
+taupre  = 20 * ms
+taupost = 20 * ms
+
+# -- Excitatory weight bounds --
 wmin = 0.0
 
-# -- Tonotopic plasticity bounds (circular Gaussian) --
-# At distance-0 (same index) these are the full values.
-# They decay to ~0 at maximum circular distance.
+# -- Tonotopic plasticity bounds — excitatory (circular Gaussian) --
+# wmax is floored at WMAX_MIN so all synapses can learn, even distant ones.
 WMAX_CENTER  = 1.0
+WMAX_MIN     = 0.3        # wmax range is [0.3, 1.0]
 APRE_CENTER  =  0.004
 APOST_CENTER = -0.0048
-PLAST_SIGMA  = N_IN / 5   # same spread as weight initialisation
+PLAST_SIGMA  = N_IN / 5
+
+# -- Inhibitory lateral synapse (distance-limited STDP) --
+SIGMA_INH       = N_H / 5    # Gaussian spread for connectivity and weight bounds
+W_INH_CENTER    = 0.3        # peak wmax at distance 0
+W_INH_MIN       = 0.0
+APRE_INH        = 0.002
+APOST_INH       = -0.0024
+INH_CUTOFF_MULT = 3          # connect neurons within INH_CUTOFF_MULT * SIGMA_INH
 
 # -- Weight initialisation (Gaussian, toroidal topology) --
 W_INIT_SIGMA     = N_IN / 5
@@ -75,7 +91,6 @@ W_INIT_SUM       = 2
 
 # -- Homeostatic normalisation --
 NORM_LIMIT = 2
-
 
 
 # ============================================================
@@ -87,20 +102,16 @@ NORM_LIMIT = 2
 
 w_ih = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
                                W_INIT_SUM, wmin, WMAX_CENTER)
-# example for a second synapse group:
-# w_ho = np.random.uniform(wmin, wmax, size=(N_H, N_OUT))
+w_hh = np.zeros((N_H, N_H))   # inhibitory weights start at 0
 
-init_weights = {"in->hid": w_ih.copy()}
+init_weights = {"in->hid": w_ih.copy(), "hid->hid": w_hh.copy()}
 
 # ============================================================
-# Pre-compute tonotopic plasticity bound matrices
+# Pre-compute tonotopic plasticity bound matrices — excitatory
 #
-# For synapse i→j:
-#   d_ij  = min(|i-j|, N_IN-|i-j|)          circular distance
-#   g_ij  = exp(-d_ij² / (2·PLAST_SIGMA²))   ∈ (0,1], peak at d=0
-#   wmax_matrix[i,j]  = WMAX_CENTER  · g_ij
-#   Apre_matrix[i,j]  = APRE_CENTER  · g_ij
-#   Apost_matrix[i,j] = APOST_CENTER · g_ij  (negative, → 0 from below)
+# wmax_matrix[i,j] = WMAX_MIN + (WMAX_CENTER - WMAX_MIN) * gauss(i,j)
+#   range [0.3, 1.0] — all pairs can learn, stronger nearby.
+# Apre / Apost scale with the same raw Gaussian (peak at 0, decay with distance).
 # ============================================================
 
 _i    = np.arange(N_IN).reshape(-1, 1)
@@ -109,10 +120,32 @@ _dist = np.abs(_i - _j)
 _dist = np.minimum(_dist, N_IN - _dist)
 _gauss = np.exp(-(_dist ** 2) / (2 * PLAST_SIGMA ** 2))
 
-wmax_matrix  = WMAX_CENTER  * _gauss
+wmax_matrix  = WMAX_MIN + (WMAX_CENTER - WMAX_MIN) * _gauss   # [0.3, 1.0]
 Apre_matrix  = APRE_CENTER  * _gauss
 Apost_matrix = APOST_CENTER * _gauss
 del _i, _j, _dist, _gauss
+
+# ============================================================
+# Pre-compute tonotopic plasticity bound matrices — inhibitory
+#
+# wmax_inh[i,j] = W_INH_CENTER * gauss_hh(i,j)  (peak at distance 0)
+# Connect only pairs within INH_CUTOFF_MULT * SIGMA_INH circular distance.
+# ============================================================
+
+_i_hh    = np.arange(N_H).reshape(-1, 1)
+_j_hh    = np.arange(N_H).reshape(1, -1)
+_dist_hh = np.abs(_i_hh - _j_hh)
+_dist_hh = np.minimum(_dist_hh, N_H - _dist_hh)
+_gauss_hh = np.exp(-(_dist_hh ** 2) / (2 * SIGMA_INH ** 2))
+
+wmax_inh_matrix  = W_INH_CENTER * _gauss_hh
+Apre_inh_matrix  = APRE_INH     * _gauss_hh
+Apost_inh_matrix = APOST_INH    * _gauss_hh
+
+_cutoff_hh       = INH_CUTOFF_MULT * SIGMA_INH
+_mask_hh         = (_dist_hh > 0) & (_dist_hh <= _cutoff_hh)
+_src_hh, _tgt_hh = np.where(_mask_hh)
+del _i_hh, _j_hh, _dist_hh, _gauss_hh
 
 
 # ============================================================
@@ -143,23 +176,33 @@ G_in.namespace["I_timed"] = TimedArray(_dummy_I, dt=DT_SIM)
 
 # ── Hidden neurons ────────────────────────────────────────────────────────────
 #
+# Changes vs. original:
+#   - Added sigma_noise*xi noise term on dv/dt
+#   - Added trace_r state variable (soft refractory): resets to 1 on spike,
+#     decays with tau_r; gates incoming excitatory current in S_ih.on_pre
+#   - Removed hard refractory (trace_r replaces it)
+#
 # TO ADD A NEW NEURON GROUP: copy this block, change the name and equations.
 # Then register it with the recorder below via recorder.track_group().
 #
 eqs_h = f"""
-dv/dt   = -v / tau_h                    : 1
-dvth/dt = -(vth - {vth_rest}) / tau_vth : 1
-is_winner                               : boolean
+dv/dt       = -v / tau_h + sigma_noise * xi                       : 1
+dvth/dt     = -(vth - {vth_rest}) / tau_vth                       : 1
+dtrace_r/dt = -trace_r / tau_r                                    : 1
+is_winner                                                         : boolean
 """
 G_h = NeuronGroup(
     N_H, eqs_h,
     threshold="v > vth and is_winner",
-    reset=f"v=0; vth=vth+{vth_jump};",
-    refractory=2 * ms,
-    method="euler"
+    reset=f"v=0; vth=vth+{vth_jump}; trace_r=1;",
+    method="euler"   # no refractory — trace_r provides soft refractoriness
 )
 
 # ── STDP synapses: input → hidden ─────────────────────────────────────────────
+#
+# Excitatory current is gated by trace_r_post: v_post += w * (1 - trace_r_post)
+# This reduces drive to recently-spiked neurons (soft refractory on the input side).
+# STDP weight update is unchanged (not gated).
 #
 # TO ADD A NEW SYNAPSE GROUP: copy this block, change the name and connect
 # to the right groups. Then register it with the recorder below.
@@ -172,7 +215,7 @@ wmax_syn   : 1
 Apre_syn   : 1
 Apost_syn  : 1
 """
-on_pre  = "v_post += w\napre += Apre_syn\nw = clip(w + apost*(w-wmin), wmin, wmax_syn)"
+on_pre  = "v_post += w * (1 - trace_r_post)\napre += Apre_syn\nw = clip(w + apost*(w-wmin), wmin, wmax_syn)"
 on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
 
 S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
@@ -184,9 +227,35 @@ S_ih.wmax_syn  = wmax_matrix[src_ih, tgt_ih]
 S_ih.Apre_syn  = Apre_matrix[src_ih, tgt_ih]
 S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
 
-# ── Lateral inhibition ────────────────────────────────────────────────────────
-lat = Synapses(G_h, G_h, on_pre="v_post = clip(v_post, 0, inf)")
-lat.connect(condition="i != j")
+# ── Inhibitory lateral synapse: hidden → hidden (tonotopic, STDP) ─────────────
+#
+# Replaces the former global voltage-clip lat synapse.
+# Connectivity is distance-limited (circular Gaussian, cutoff at 3*SIGMA_INH).
+# Standard Hebbian STDP: pre-before-post strengthens inhibition,
+#                        post-before-pre weakens it.
+# Inhibitory current is NOT gated by trace_r (arrives unconditionally).
+#
+stdp_inh_model = """
+w_inh          : 1
+dapre_inh/dt   = -apre_inh  / taupre  : 1 (event-driven)
+dapost_inh/dt  = -apost_inh / taupost : 1 (event-driven)
+wmax_inh_syn   : 1
+Apre_inh_syn   : 1
+Apost_inh_syn  : 1
+"""
+on_pre_inh  = (f"v_post -= w_inh\n"
+               f"apre_inh += Apre_inh_syn\n"
+               f"w_inh = clip(w_inh + apost_inh*(w_inh-{W_INH_MIN}), {W_INH_MIN}, wmax_inh_syn)")
+on_post_inh = (f"apost_inh += Apost_inh_syn\n"
+               f"w_inh = clip(w_inh + apre_inh*(wmax_inh_syn-w_inh), {W_INH_MIN}, wmax_inh_syn)")
+
+S_hh = Synapses(G_h, G_h, model=stdp_inh_model, on_pre=on_pre_inh, on_post=on_post_inh)
+S_hh.connect(i=_src_hh, j=_tgt_hh)
+
+S_hh.wmax_inh_syn  = wmax_inh_matrix[_src_hh, _tgt_hh]
+S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
+S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
+S_hh.w_inh         = w_hh[_src_hh, _tgt_hh]   # start at 0
 
 # ── Custom network operations ─────────────────────────────────────────────────
 #
@@ -210,7 +279,7 @@ def determine_winner():
     else:
         G_h.is_winner[:] = False
 
-net = Network(G_in, G_h, S_ih, lat, determine_winner)
+net = Network(G_in, G_h, S_ih, S_hh, determine_winner)
 
 
 # ============================================================
@@ -233,16 +302,46 @@ recorder.track_group("input",  G_in)
 recorder.track_group("hidden", G_h)
 # recorder.track_group("output", G_out)   # <-- add new groups here
 
-recorder.track_synapses("in->hid", S_ih, src_ih, tgt_ih)
+recorder.track_synapses("in->hid",  S_ih, src_ih, tgt_ih)
+recorder.track_synapses("hid->hid", S_hh, _src_hh, _tgt_hh)
 # recorder.track_synapses("hid->out", S_ho, src_ho, tgt_ho)   # <-- add new synapses here
 
 recorder.build()   # attaches all Brian2 monitors — call once, after all registrations
 
+# ── Per-spike L1 normalisation (network_operation) ───────────────────────────
+#
+# Normalises each hidden neuron's incoming excitatory weight column immediately
+# after it spikes (true per-spike). Uses the same pattern as
+# training/prob_connections_to_be_deleted/train.py:201-219.
+#
+# Pre-compute per-column synapse index arrays for efficient targeted writes.
+tgt_masks_ih = [np.where(tgt_ih == j)[0] for j in range(N_H)]
+wmax_syn_arr  = np.array(S_ih.wmax_syn)   # static per-synapse wmax, cache once
+
+# Reuse the recorder's spike monitor to avoid creating a duplicate SpikeMonitor.
+spike_mon_h = recorder._groups["hidden"]["mon"]["spike"]
+
+_norm_state = {"prev": np.zeros(N_H, dtype=np.int64)}
+
+@network_operation(when='end')
+def normalize_on_spike():
+    curr       = np.array(spike_mon_h.count)
+    just_fired = np.where(curr > _norm_state["prev"])[0]
+    _norm_state["prev"][:] = curr
+    if len(just_fired) == 0:
+        return
+    for nid in just_fired:
+        idx   = tgt_masks_ih[nid]
+        w_col = np.array(S_ih.w[idx])
+        wsum  = w_col.sum()
+        if wsum > NORM_LIMIT and NORM_LIMIT > 0:
+            S_ih.w[idx] = np.clip(w_col * NORM_LIMIT / wsum, wmin, wmax_syn_arr[idx])
+
+net.add(normalize_on_spike)
+
 # Snapshot the clean initial state (clock=0, v=0, a=0, vth=vth_init,
-# not_refractory=True, empty monitors).  net.restore('init') before every
-# sample brings the network back to this state, which is the only correct
-# way to reset all Brian2 internal state (including refractory bookkeeping)
-# without rebuilding the network.
+# trace_r=0, is_winner=False, apre/apost=0, empty monitors).
+# net.restore('init') before every sample brings the network back to this state.
 G_h.vth = vth_init   # default Brian2 init is 0; set before store
 net.store('init')
 
@@ -280,8 +379,8 @@ for epoch_idx in range(EPOCHS):
         duration_s = float(T) * float(DT_SIM)
 
         # ── Reset to clean state, then inject this sample's data ──────────────
-        # restore resets: clock→0, v, a, vth, is_winner, apre, apost,
-        #                 not_refractory, and all monitor buffers.
+        # restore resets: clock→0, v, a, vth, trace_r, is_winner, apre, apost,
+        #                 and all monitor buffers.
         net.restore('init')
 
         G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
@@ -290,10 +389,14 @@ for epoch_idx in range(EPOCHS):
         S_ih.w    = w_ih[src_ih, tgt_ih]
         S_ih.apre  = 0
         S_ih.apost = 0
-        # TO ADD A NEW SYNAPSE GROUP reset:
-        # S_ho.w     = w_ho[src_ho, tgt_ho]
-        # S_ho.apre  = 0
-        # S_ho.apost = 0
+
+        # Restore learned inhibitory weights (start at 0 for epoch 0).
+        S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
+        S_hh.apre_inh  = 0
+        S_hh.apost_inh = 0
+
+        # spike_mon_h.count is reset to 0 by net.restore; sync _norm_state.
+        _norm_state["prev"][:] = 0
 
         # Recorder tracks elapsed time in Python; since restore resets the
         # Brian2 clock to 0, spike times in the monitor are always [0, T] ms.
@@ -307,30 +410,24 @@ for epoch_idx in range(EPOCHS):
         net.run(T * DT_SIM)
 
         # ── Extract updated weights ────────────────────────────────────────────
+        # Excitatory weights are already L1-normalised per-spike during simulation.
         w_ih_new = np.zeros((N_IN, N_H))
         w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
-        # TO ADD A NEW SYNAPSE GROUP extraction:
-        # w_ho_new = np.zeros((N_H, N_OUT))
-        # w_ho_new[src_ho, tgt_ho] = np.array(S_ho.w)
+        w_ih = w_ih_new
 
-        # ── Custom normalisation ───────────────────────────────────────────────
-        # Put any custom normalisation logic here — it belongs in train.py,
-        # not in the recorder. Use recorder.spikes_this_sample(name) to get
-        # the spike indices for any registered group without touching monitors.
-        spiked_hidden = np.unique(recorder.spikes_this_sample("hidden"))
-        w_ih = l1_normalise_weights(w_ih_new, spiked_hidden, NORM_LIMIT, wmin, WMAX_CENTER)
-        # Example custom normalisation for a second synapse group:
-        # spiked_output = np.unique(recorder.spikes_this_sample("output"))
-        # w_ho = normalise_weights(w_ho_new, spiked_output, NORM_LIMIT, wmin, wmax)
+        # Inhibitory weights are self-regulated by STDP bounds; just extract.
+        w_hh_new = np.zeros((N_H, N_H))
+        w_hh_new[_src_hh, _tgt_hh] = np.array(S_hh.w_inh)
+        w_hh = w_hh_new
 
         # ── Record: after ──────────────────────────────────────────────────────
-        # Pass all post-normalisation weight matrices you want recorded per-sample.
+        # Pass all post-simulation weight matrices you want recorded per-sample.
         recorder.after_sample(
             sample_idx,
             duration_s,
             w_matrices={
-                "in->hid": w_ih,
-                # "hid->out": w_ho,   # <-- add new synapse matrices here
+                "in->hid":  w_ih,
+                "hid->hid": w_hh,
             }
         )
 
@@ -339,8 +436,8 @@ for epoch_idx in range(EPOCHS):
         epoch_idx,
         save_dir=SAVE_DIR,
         final_weights={
-            "in->hid": w_ih,
-            # "hid->out": w_ho,
+            "in->hid":  w_ih,
+            "hid->hid": w_hh,
         },
         init_weights=init_weights if epoch_idx == 0 else None,
     )
