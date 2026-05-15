@@ -16,11 +16,18 @@ start = time.time()
 # ============================================================
 # Dataset
 # ============================================================
-# TODO: set the path
-wav_files = sorted(glob.glob("datasets/vox1_single_person_nano_2/dev/*.wav", recursive=True))
+# wav_files = [
+#     "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00003.wav",
+#     "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00004.wav"
+# ]
+
+wav_files = [
+    "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
+]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 8
+EPOCHS   = 2
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -105,6 +112,7 @@ _gauss = np.exp(-(_dist ** 2) / (2 * PLAST_SIGMA ** 2))
 wmax_matrix  = WMAX_CENTER  * _gauss
 Apre_matrix  = APRE_CENTER  * _gauss
 Apost_matrix = APOST_CENTER * _gauss
+del _i, _j, _dist, _gauss
 
 
 # ============================================================

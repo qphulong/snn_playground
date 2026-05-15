@@ -19,21 +19,15 @@ record:
 
     input:
       spike_raster:       true
-      mean_firing_rate:   false
+      mean_firing_rate:   true
       membrane_potential: []
       membrane_potential_variables: []
 
     hidden:
       spike_raster:       true
-      mean_firing_rate:   false
-      membrane_potential:
-        - [0]
-        - [100]
-        - [200]
-        - [350]
-        - [500]
-        - [600]
-      membrane_potential_variables: ["v", "vth"]
+      mean_firing_rate:   true
+      membrane_potential: [600]
+      membrane_potential_variables: [v, vth]
 
   synapses:
 
@@ -46,8 +40,8 @@ record:
 
 visualize:
 
-  visualize_samples: [8, 9]
-  visualize_epoch:   [0, 1, 2, 3, 4, 5, 6, 7]
+  visualize_samples: [0, 1]
+  visualize_epoch:   [0, 1]
 
   track_weight_delta: false
 
@@ -55,21 +49,15 @@ visualize:
 
     input:
       spike_raster:       true
-      mean_firing_rate:   false
+      mean_firing_rate:   true
       membrane_potential: []
       membrane_potential_variables: []
 
     hidden:
       spike_raster:       true
-      mean_firing_rate:   false
-      membrane_potential:
-        - [0]
-        - [100]
-        - [200]
-        - [350]
-        - [500]
-        - [600]
-      membrane_potential_variables: ["v", "vth"]
+      mean_firing_rate:   true
+      membrane_potential: [600]
+      membrane_potential_variables: [v, vth]
 
   synapses:
 
@@ -79,9 +67,4 @@ visualize:
 
   weights_per_neuron:
     in->hid:
-      - 0
-      - 100
-      - 200
-      - 350
-      - 500
       - 600
