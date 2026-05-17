@@ -41,9 +41,9 @@ DT_SIM = 1 * ms
 
 # -- Input layer (adaptive LIF) --
 tau_m       = 40 * ms
-tau_a       = 20 * ms
+tau_a       = 100 * ms
 tau_current = 1 * ms
-beta        = 0.25
+beta        = 1
 v_th_in     = 1.0
 
 # -- Hidden layer (adaptive-threshold LIF) --
@@ -308,36 +308,22 @@ recorder.track_synapses("hid->hid", S_hh, _src_hh, _tgt_hh)
 
 recorder.build()   # attaches all Brian2 monitors — call once, after all registrations
 
-# ── Per-spike L1 normalisation (network_operation) ───────────────────────────
-#
-# Normalises each hidden neuron's incoming excitatory weight column immediately
-# after it spikes (true per-spike). Uses the same pattern as
-# training/prob_connections_to_be_deleted/train.py:201-219.
+# ── Periodic L1 normalisation every 500 ms (network_operation) ───────────────
 #
 # Pre-compute per-column synapse index arrays for efficient targeted writes.
 tgt_masks_ih = [np.where(tgt_ih == j)[0] for j in range(N_H)]
 wmax_syn_arr  = np.array(S_ih.wmax_syn)   # static per-synapse wmax, cache once
 
-# Reuse the recorder's spike monitor to avoid creating a duplicate SpikeMonitor.
-spike_mon_h = recorder._groups["hidden"]["mon"]["spike"]
-
-_norm_state = {"prev": np.zeros(N_H, dtype=np.int64)}
-
-@network_operation(when='end')
-def normalize_on_spike():
-    curr       = np.array(spike_mon_h.count)
-    just_fired = np.where(curr > _norm_state["prev"])[0]
-    _norm_state["prev"][:] = curr
-    if len(just_fired) == 0:
-        return
-    for nid in just_fired:
-        idx   = tgt_masks_ih[nid]
+@network_operation(dt=500*ms, when='end')
+def normalize_weights():
+    for j in range(N_H):
+        idx   = tgt_masks_ih[j]
         w_col = np.array(S_ih.w[idx])
         wsum  = w_col.sum()
         if wsum > NORM_LIMIT and NORM_LIMIT > 0:
             S_ih.w[idx] = np.clip(w_col * NORM_LIMIT / wsum, wmin, wmax_syn_arr[idx])
 
-net.add(normalize_on_spike)
+net.add(normalize_weights)
 
 # Snapshot the clean initial state (clock=0, v=0, a=0, vth=vth_init,
 # trace_r=0, is_winner=False, apre/apost=0, empty monitors).
@@ -365,7 +351,7 @@ for epoch_idx in range(EPOCHS):
         try:
             I, T = compute_spike_input_current(
                 audio_path,
-                scale=1,
+                scale=0.8,
                 sustained_per_band=4,
                 onset_per_band=2,
                 phase_per_band=1,
@@ -395,9 +381,6 @@ for epoch_idx in range(EPOCHS):
         S_hh.apre_inh  = 0
         S_hh.apost_inh = 0
 
-        # spike_mon_h.count is reset to 0 by net.restore; sync _norm_state.
-        _norm_state["prev"][:] = 0
-
         # Recorder tracks elapsed time in Python; since restore resets the
         # Brian2 clock to 0, spike times in the monitor are always [0, T] ms.
         # Reset _elapsed_ms so start_ms = 0 and the slice arithmetic is correct.
@@ -410,7 +393,7 @@ for epoch_idx in range(EPOCHS):
         net.run(T * DT_SIM)
 
         # ── Extract updated weights ────────────────────────────────────────────
-        # Excitatory weights are already L1-normalised per-spike during simulation.
+        # Excitatory weights are L1-normalised every 500 ms during simulation.
         w_ih_new = np.zeros((N_IN, N_H))
         w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
         w_ih = w_ih_new
