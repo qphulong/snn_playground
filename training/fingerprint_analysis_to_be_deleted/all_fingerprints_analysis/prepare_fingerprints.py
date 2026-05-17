@@ -40,14 +40,15 @@ Usage:
   python training/fingerprint_analysis/prepare_fingerprints.py
 """
 
+import numpy as np
+np.random.seed(42)
 import os
 import sys
 import time
 
-import numpy as np
 from brian2 import (
     NeuronGroup, Synapses, SpikeMonitor, TimedArray, Network, network_operation,
-    start_scope, defaultclock, ms,
+    defaultclock, ms,
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
@@ -64,7 +65,7 @@ DATASET_ROOT = os.path.join(REPO_ROOT, 'datasets', 'vox1_fingerprint_analysis')
 OUT_PATH     = os.path.join(SCRIPT_DIR, 'fingerprints.npz')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Hyperparameters  (identical to train.py)
+# Hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
 
 N_IN = 700
@@ -84,13 +85,16 @@ vth_rest = 0.8
 vth_init = 0.8
 vth_jump = 0.3
 
-taupre      = 20  * ms
-taupost     = 20  * ms
-Apre_delta  =  0.004
-Apost_delta = -0.0048
+taupre  = 20  * ms
+taupost = 20  * ms
 
-wmax = 1.0
 wmin = 0.0
+
+# -- Tonotopic plasticity bounds (circular Gaussian) --
+WMAX_CENTER  = 1.0
+APRE_CENTER  =  0.004
+APOST_CENTER = -0.0048
+PLAST_SIGMA  = N_IN / 5
 
 W_INIT_SIGMA     = N_IN / 5
 W_INIT_NOISE_STD = 0.005
@@ -99,17 +103,108 @@ W_INIT_SUM       = 2
 NORM_LIMIT = 2
 
 NUM_EPOCHS         = 2
-COLLECT_FROM_EPOCH = 1  # 0-indexed: collect weights from the second epoch onward
+COLLECT_FROM_EPOCH = 1
 
-WTA_K = 35  # number of winners per timestep
+WTA_K = 35
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared initial weight matrix — same for all 30 runs
 # ─────────────────────────────────────────────────────────────────────────────
 
-np.random.seed(42)
 W_INIT = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
-                                W_INIT_SUM, wmin, wmax)
+                                W_INIT_SUM, wmin, WMAX_CENTER)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pre-compute tonotopic plasticity bound matrices
+# ─────────────────────────────────────────────────────────────────────────────
+
+_i    = np.arange(N_IN).reshape(-1, 1)
+_j    = np.arange(N_H).reshape(1, -1)
+_dist = np.abs(_i - _j)
+_dist = np.minimum(_dist, N_IN - _dist)
+_gauss = np.exp(-(_dist ** 2) / (2 * PLAST_SIGMA ** 2))
+
+wmax_matrix  = WMAX_CENTER  * _gauss
+Apre_matrix  = APRE_CENTER  * _gauss
+Apost_matrix = APOST_CENTER * _gauss
+del _i, _j, _dist, _gauss
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build Brian2 network (once — shared across all 30 runs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+defaultclock.dt = DT_SIM
+
+# ── Input neurons ──────────────────────────────────────────────────────────────
+eqs_in = """
+dv/dt = (-v - a) / tau_m + I_timed(t, i) / tau_current : 1
+da/dt = -a / tau_a : 1
+"""
+G_in = NeuronGroup(N_IN, eqs_in,
+                   threshold="v > v_th_in",
+                   reset="v=0; a+=beta",
+                   refractory=2 * ms, method="euler")
+
+_dummy_I = np.zeros((1, N_IN), dtype=float)
+G_in.namespace["I_timed"] = TimedArray(_dummy_I, dt=DT_SIM)
+
+# ── Hidden neurons ─────────────────────────────────────────────────────────────
+eqs_h = f"""
+dv/dt   = -v / tau_h                    : 1
+dvth/dt = -(vth - {vth_rest}) / tau_vth : 1
+is_winner                               : boolean
+"""
+G_h = NeuronGroup(N_H, eqs_h,
+                  threshold="v > vth and is_winner",
+                  reset=f"v=0; vth=vth+{vth_jump};",
+                  refractory=2 * ms, method="euler")
+
+# ── STDP synapses: input → hidden ─────────────────────────────────────────────
+stdp_model = """
+w          : 1
+dapre/dt   = -apre  / taupre  : 1 (event-driven)
+dapost/dt  = -apost / taupost : 1 (event-driven)
+wmax_syn   : 1
+Apre_syn   : 1
+Apost_syn  : 1
+"""
+on_pre  = "v_post += w\napre += Apre_syn\nw = clip(w + apost*(w-wmin), wmin, wmax_syn)"
+on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
+
+S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
+S_ih.connect()
+src_ih = np.array(S_ih.i)
+tgt_ih = np.array(S_ih.j)
+
+S_ih.wmax_syn  = wmax_matrix[src_ih, tgt_ih]
+S_ih.Apre_syn  = Apre_matrix[src_ih, tgt_ih]
+S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
+
+# ── Lateral inhibition ─────────────────────────────────────────────────────────
+lat = Synapses(G_h, G_h, on_pre="v_post = clip(v_post, 0, inf)")
+lat.connect(condition="i != j")
+
+# ── WTA network operation ──────────────────────────────────────────────────────
+@network_operation(when="before_thresholds")
+def determine_winner():
+    v       = G_h.v[:]
+    vth_arr = G_h.vth[:]
+    crossed = v > vth_arr
+    if np.any(crossed):
+        candidates = np.where(crossed)[0]
+        sorted_idx = candidates[np.argsort(vth_arr[candidates])]
+        winners    = sorted_idx[:WTA_K]
+        G_h.is_winner[:]       = False
+        G_h.is_winner[winners] = True
+        G_h.v[np.setdiff1d(candidates, winners)] = 0.5
+    else:
+        G_h.is_winner[:] = False
+
+spike_mon_h = SpikeMonitor(G_h)
+
+net = Network(G_in, G_h, S_ih, lat, determine_winner, spike_mon_h)
+G_h.vth = vth_init
+net.store('init')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,15 +212,7 @@ W_INIT = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def discover_dataset(root):
-    """Return sorted list of run descriptors, one per (person, record, part).
-
-    Each descriptor is a dict:
-      person_id  str   e.g. "id10545"
-      record_id  str   e.g. "id10545_00007"
-      part       str   "A" or "B"
-      wav_files  list  [path_sample1, path_sample2]
-      label      str   human-readable run label
-    """
+    """Return sorted list of run descriptors, one per (person, record, part)."""
     entries = []
     for person_id in sorted(os.listdir(root)):
         person_dir = os.path.join(root, person_id)
@@ -159,75 +246,13 @@ def discover_dataset(root):
 def train_fingerprint(wav_files, label):
     """Train one SNN run and return the averaged weight fingerprint.
 
-    Builds a fresh Brian2 network each call.  Weight matrices are collected
-    after every sample in epochs >= COLLECT_FROM_EPOCH and averaged.
+    Uses the shared pre-built network. Weight matrices are collected after
+    every sample in epochs >= COLLECT_FROM_EPOCH and averaged.
 
     Returns np.ndarray of shape (N_IN, N_H), dtype float32.
     """
     t0   = time.time()
     w_ih = W_INIT.copy()
-
-    start_scope()
-    defaultclock.dt = DT_SIM
-
-    _dummy_I = np.zeros((1, N_IN), dtype=float)
-    I_timed  = TimedArray(_dummy_I, dt=DT_SIM)
-
-    eqs_in = """
-    dv/dt = (-v - a) / tau_m + I_timed(t, i) / tau_current : 1
-    da/dt = -a / tau_a : 1
-    """
-    G_in = NeuronGroup(N_IN, eqs_in,
-                       threshold="v > v_th_in",
-                       reset="v=0; a+=beta",
-                       refractory=2 * ms, method="euler")
-
-    eqs_h = f"""
-    dv/dt   = -v / tau_h                    : 1
-    dvth/dt = -(vth - {vth_rest}) / tau_vth : 1
-    is_winner                               : boolean
-    """
-    G_h = NeuronGroup(N_H, eqs_h,
-                      threshold="v > vth and is_winner",
-                      reset=f"v=0; vth=vth+{vth_jump};",
-                      refractory=2 * ms, method="euler")
-
-    stdp_model = """
-    w         : 1
-    dapre/dt  = -apre  / taupre  : 1 (event-driven)
-    dapost/dt = -apost / taupost : 1 (event-driven)
-    """
-    on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost*(w-wmin), wmin, wmax)"
-    on_post = "apost += Apost_delta\nw = clip(w + apre*(wmax-w), wmin, wmax)"
-
-    S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
-    S_ih.connect()
-    src_ih = np.array(S_ih.i)
-    tgt_ih = np.array(S_ih.j)
-
-    lat = Synapses(G_h, G_h, on_pre="v_post = clip(v_post, 0, inf)")
-    lat.connect(condition="i != j")
-
-    @network_operation(when="before_thresholds")
-    def determine_winner():
-        v       = G_h.v[:]
-        vth_arr = G_h.vth[:]
-        crossed = v > vth_arr
-        if np.any(crossed):
-            candidates = np.where(crossed)[0]
-            sorted_idx = candidates[np.argsort(vth_arr[candidates])]
-            winners    = sorted_idx[:WTA_K]
-            G_h.is_winner[:]       = False
-            G_h.is_winner[winners] = True
-            G_h.v[np.setdiff1d(candidates, winners)] = 0.5
-        else:
-            G_h.is_winner[:] = False
-
-    spike_mon_h = SpikeMonitor(G_h)
-
-    net = Network(G_in, G_h, S_ih, lat, determine_winner, spike_mon_h)
-    G_h.vth = vth_init
-    net.store('init')
 
     collected = []
 
@@ -245,8 +270,8 @@ def train_fingerprint(wav_files, label):
 
             net.restore('init')
             G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
-            S_ih.w    = w_ih[src_ih, tgt_ih]
-            S_ih.apre = 0
+            S_ih.w     = w_ih[src_ih, tgt_ih]
+            S_ih.apre  = 0
             S_ih.apost = 0
 
             net.run(T * DT_SIM)
@@ -254,7 +279,7 @@ def train_fingerprint(wav_files, label):
             w_ih_new = np.zeros((N_IN, N_H))
             w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
             spiked = np.unique(np.array(spike_mon_h.i))
-            w_ih = l1_normalise_weights(w_ih_new, spiked, NORM_LIMIT, wmin, wmax)
+            w_ih = l1_normalise_weights(w_ih_new, spiked, NORM_LIMIT, wmin, WMAX_CENTER)
 
             if epoch_idx >= COLLECT_FROM_EPOCH:
                 collected.append(w_ih.copy())
