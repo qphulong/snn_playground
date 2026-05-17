@@ -35,6 +35,7 @@ def auditory_frontend(
     f_min=50,
     alpha=1.0,
     normalization="global",
+    gamma=0.5,
     eps=1e-6,
 ):
     """
@@ -68,6 +69,12 @@ def auditory_frontend(
         - "global": divide by global max amplitude
         - "rms": per-channel RMS normalization
         - None: no normalization
+
+    gamma : float, default=0.3
+        Power law exponent applied to E after normalization.
+        Compresses dynamic range across channels while preserving relative dominance.
+        Values < 1 boost weak channels without flattening strong ones (e.g. 0.3 turns
+        a 100x ratio into ~4x). Set to 1.0 to disable.
 
     eps : float, default=1e-6
         Small constant to avoid division by zero.
@@ -165,6 +172,9 @@ def auditory_frontend(
 
     else:
         raise ValueError("normalization must be {'global', 'rms', None}")
+
+    if gamma != 1.0:
+        E = np.power(E, gamma)
 
     return {
         "E": E,
