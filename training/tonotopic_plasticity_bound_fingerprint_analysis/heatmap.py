@@ -111,14 +111,19 @@ def rooted_error(x, y):
     return float(np.sqrt(np.sum((x - y) ** 2)))
 
 
+def log_absolute_distance(x, y):
+    return float(np.log(np.sum(np.abs(x - y)) + 1.0))
+
+
 # (fn, is_distance)  — is_distance=True reverses the colormap and uses dynamic range
 METRICS = {
-    "cosine":          (cosine,          False),
-    "dot_product":     (dot_product,     False),
-    "weighted_cosine": (weighted_cosine, False),
-    "squared_error":   (squared_error,   True),
-    "absolute_error":  (absolute_error,  True),
-    "rooted_error":    (rooted_error,    True),
+    "cosine":                (cosine,                False),
+    "dot_product":           (dot_product,           False),
+    "weighted_cosine":       (weighted_cosine,       False),
+    "squared_error":         (squared_error,         True),
+    "absolute_error":        (absolute_error,        True),
+    "rooted_error":          (rooted_error,          True),
+    "log_absolute_distance": (log_absolute_distance, True),
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
