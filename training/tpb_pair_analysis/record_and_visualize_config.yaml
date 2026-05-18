@@ -1,0 +1,88 @@
+# ============================================================
+# record_and_visualize_config.yaml
+#
+# record:    drives Recorder  — what Brian2 data to collect
+# visualize: drives visualize.py — what plots to produce
+#
+# The two sections are fully independent: recorder.py reads only
+# from record:, and visualize.py reads only from visualize:.
+# ============================================================
+
+
+# ── Recording configuration ───────────────────────────────────────────────────
+
+record:
+
+  snapshot_interval_ms: 500
+
+  groups:
+
+    input:
+      spike_raster:       true
+      mean_firing_rate:   true
+      membrane_potential: []
+      membrane_potential_variables: []
+
+    hidden:
+      spike_raster:       true
+      mean_firing_rate:   true
+      membrane_potential: [398,399,400,401,402]
+      membrane_potential_variables: [v, vth, trace_r]
+
+  synapses:
+
+    in->hid:
+      weights_evolution:        []
+      final_weights_per_sample: true
+
+    hid->hid:
+      weights_evolution:        []
+      final_weights_per_sample: true
+
+
+# ── Visualization configuration ───────────────────────────────────────────────
+
+visualize:
+
+  visualize_samples: [0, 1, 2, 3, 4]
+  visualize_epoch:   [0, 1]
+
+  track_weight_delta: false
+
+  groups:
+
+    input:
+      spike_raster:       true
+      mean_firing_rate:   true
+      membrane_potential: []
+      membrane_potential_variables: []
+
+    hidden:
+      spike_raster:       true
+      mean_firing_rate:   true
+      membrane_potential: [398,399,400,401,402]
+      membrane_potential_variables: [v, vth, trace_r]
+
+  synapses:
+
+    in->hid:
+      weights_evolution:        []
+      final_weights_per_sample: true
+
+    hid->hid:
+      weights_evolution:        []
+      final_weights_per_sample: true
+
+  weights_per_neuron:
+    in->hid:
+      - 398
+      - 399
+      - 400
+      - 401
+      - 402
+    hid->hid:
+      - 398
+      - 399
+      - 400
+      - 401
+      - 402
