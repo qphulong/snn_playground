@@ -26,7 +26,7 @@ record:
     hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [0, 50, 100, 150, 200, 250, 300, 348,349,350,351,352, 400, 450, 500, 550, 600, 650, 699]
+      membrane_potential: [398,399,400,401,402]
       membrane_potential_variables: [v, vth, trace_r]
 
   synapses:
@@ -44,7 +44,7 @@ record:
 
 visualize:
 
-  visualize_samples: [0, 1]
+  visualize_samples: [0, 1,2,3,4]
   visualize_epoch:   [0, 1]
 
   track_weight_delta: false
@@ -60,7 +60,7 @@ visualize:
     hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [0, 50, 100, 150, 200, 250, 300, 348,349,350,351,352, 400, 450, 500, 550, 600, 650, 699]
+      membrane_potential: [398,399,400,401,402]
       membrane_potential_variables: [v, vth, trace_r]
 
   synapses:
@@ -75,38 +75,14 @@ visualize:
 
   weights_per_neuron:
     in->hid:
-      - 0
-      - 50
-      - 100
-      - 150
-      - 200
-      - 250
-      - 300
-      - 350
       - 398
       - 399
       - 400
       - 401
       - 402
-      - 450
-      - 500
-      - 550
-      - 600
-      - 650
-      - 699
     hid->hid:
-      - 0
-      - 50
-      - 100
-      - 150
-      - 200
-      - 250
-      - 300
-      - 350
+      - 398
+      - 399
       - 400
-      - 450
-      - 500
-      - 550
-      - 600
-      - 650
-      - 699
+      - 401
+      - 402

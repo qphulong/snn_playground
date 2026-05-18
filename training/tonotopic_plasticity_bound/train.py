@@ -21,10 +21,19 @@ start = time.time()
 #     "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00004.wav"
 # ]
 
+# wav_files = [
+#     "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
+#     "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
+# ]
+
 wav_files = [
-    "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
-    "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
+    "datasets/slicing_window_analysis/sample1/slice_00010.wav",
+    "datasets/slicing_window_analysis/sample1/slice_00011.wav",
+    "datasets/slicing_window_analysis/sample1/slice_00012.wav",
+    "datasets/slicing_window_analysis/sample1/slice_00013.wav",
+    "datasets/slicing_window_analysis/sample1/slice_00014.wav",
 ]
+
 print(f"Found {len(wav_files)} wav files")
 
 EPOCHS   = 2
@@ -72,8 +81,8 @@ wmin = 0.0
 # wmax is floored at WMAX_MIN so all synapses can learn, even distant ones.
 WMAX_CENTER  = 1.0
 WMAX_MIN     = 0.3        # wmax range is [0.3, 1.0]
-APRE_CENTER  =  0.004
-APOST_CENTER = -0.0048
+APRE_CENTER  =  0.002
+APOST_CENTER = -0.0024
 PLAST_SIGMA  = N_IN / 5
 
 # -- Inhibitory lateral synapse (distance-limited STDP) --
