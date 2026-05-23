@@ -17,13 +17,13 @@ start = time.time()
 # ============================================================
 
 WAV_FILES_A = [
-    "datasets/vox1_fingerprint_analysis/id10797/id10797_00002/00001.wav",
-    "datasets/vox1_fingerprint_analysis/id10797/id10797_00002/00002.wav",
+    "datasets/vox1_fingerprint_analysis/id10545/id10545_00010/00001.wav",
+    "datasets/vox1_fingerprint_analysis/id10545/id10545_00010/00002.wav",
 ]
 
 WAV_FILES_B = [
-    "datasets/vox1_fingerprint_analysis/id10678/id10678_00007/00003.wav",
-    "datasets/vox1_fingerprint_analysis/id10678/id10678_00007/00004.wav",
+    "datasets/vox1_fingerprint_analysis/id10545/id10545_00010/00003.wav",
+    "datasets/vox1_fingerprint_analysis/id10545/id10545_00010/00004.wav",
 ]
 
 EPOCHS   = 2
@@ -74,7 +74,7 @@ PLAST_SIGMA  = N_IN / 5
 
 # -- Inhibitory lateral synapse (distance-limited STDP) --
 SIGMA_INH       = N_H / 5
-W_INH_CENTER    = 0.3
+W_INH_CENTER    = 0.9
 W_INH_MIN       = 0.0
 APRE_INH        = 0.002
 APOST_INH       = -0.0024

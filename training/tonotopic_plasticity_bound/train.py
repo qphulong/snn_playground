@@ -87,7 +87,7 @@ PLAST_SIGMA  = N_IN / 5
 
 # -- Inhibitory lateral synapse (distance-limited STDP) --
 SIGMA_INH       = N_H / 5    # Gaussian spread for connectivity and weight bounds
-W_INH_CENTER    = 0.3        # peak wmax at distance 0
+W_INH_CENTER    = 0.9        # peak wmax at distance 0
 W_INH_MIN       = 0.0
 APRE_INH        = 0.002
 APOST_INH       = -0.0024
