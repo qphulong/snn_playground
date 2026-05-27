@@ -6,6 +6,17 @@
 #
 # The two sections are fully independent: recorder.py reads only
 # from record:, and visualize.py reads only from visualize:.
+#
+# Inhibition level reference (determined by shared input channels):
+#   level 3 (wmax 1.0) — same group, i≠j
+#   level 2 (wmax 0.6) — 2 common channels
+#   level 1 (wmax 0.3) — 1 common channel
+#   level 0            — 0 common channels → NO connection
+#
+# Per-sample weight snapshots (final_weights_per_sample):
+#   Only synapses passed to recorder.after_sample() in train.py can be
+#   saved per sample. Currently: in->cnn, lat_cc.
+#   lat_cd and lat_dc are only saved at epoch end via save_epoch().
 # ============================================================
 
 
@@ -23,41 +34,72 @@ record:
     input:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: []          # list of neuron indices, or [idx, [t0_ms, t1_ms]]
+      membrane_potential: [0]          # neuron 0: ch0, first sustained neuron
       membrane_potential_variables: ["v"]
 
-    hidden:
+    cnn_hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential:
-        - [0  ]
-        - [350]
-      membrane_potential_variables: ["v", "vth", "is_winner"]
+      # Group 0 (ch 0, neurons 0-3), group 47 (ch 47, neurons 188-191),
+      # group 95 (ch 95, neurons 380-383) — first, middle, wraparound
+      membrane_potential: [0, 1, 2, 3, 188, 189, 190, 191, 380, 381, 382, 383]
+      membrane_potential_variables: ["v", "vth", "trace_r"]
 
-    # ── Template for a new group ────────────────────────────────────────────
-    # output:
-    #   spike_raster:       true
-    #   mean_firing_rate:   true
-    #   membrane_potential: []
-    #   membrane_potential_variables: ["v"]
+    duo_hidden:
+      spike_raster:       true
+      mean_firing_rate:   true
+      # First duo group (pair 0,1, neurons 0-3), last duo group (neurons 18236-18239)
+      membrane_potential: [0, 1, 2, 3, 18236, 18237, 18238, 18239]
+      membrane_potential_variables: ["v", "vth", "trace_r"]
 
-  # ── Synapse groups ──────────────────────────────────────────────────────────
+  # ── Synapses ─────────────────────────────────────────────────────────────────
+  # weights_evolution: list of [pre_idx, post_idx] pairs to snapshot every
+  #   snapshot_interval_ms.  Use [] to disable.
+  # final_weights_per_sample: save the full weight matrix after each sample.
+  #   Only set true for synapses passed to recorder.after_sample() in train.py.
 
   synapses:
 
-    in->hid:
+    in->cnn:
       weights_evolution:
-        - [0,   0]
-        - [100, 100]
-        - [350, 350]
+        - [0,   0]    # ch0 input → group0 (baseline)
+        - [665, 380]  # ch95 input → group95 (last channel→last group)
       final_weights_per_sample: true
 
-    # ── Template for a new synapse group ───────────────────────────────────
-    # hid->out:
-    #   weights_evolution:
-    #     - [0, 0]
-    #     - [50, 10]
-    #   final_weights_per_sample: false
+    in->duo:
+      # 672×18240 — too large for per-sample snapshots; saved only at epoch end
+      weights_evolution:
+        - [0, 0]    # ch0 input → duo group0 (pair 0,1)
+        - [7, 0]    # ch1 input → duo group0 (pair 0,1)
+      final_weights_per_sample: false
+
+    lat_cc:
+      weights_evolution:
+        - [0,   1]    # within group0, level3 (wmax 1.0)
+        - [0,   4]    # group0→group1, adjacent, level2 (wmax 0.6)
+        - [0,   8]    # group0→group2, distance-2, level1 (wmax 0.3)
+        - [380, 0]    # group95→group0, wraparound level2 (wmax 0.6)
+        - [376, 0]    # group94→group0, wraparound level1 (wmax 0.3)
+      final_weights_per_sample: true
+
+    lat_dd:
+      # 18240×18240 — too large; saved only at epoch end
+      weights_evolution:
+        - [0, 1]    # within duo group0, level3 (wmax 1.0)
+        - [0, 4]    # duo group0(0,1)→group1(0,2), share ch0, level1 (wmax 0.3)
+      final_weights_per_sample: false
+
+    lat_cd:
+      # 384×18240 — not passed to after_sample; saved only at epoch end
+      weights_evolution:
+        - [0, 0]    # CNN group0 → duo group0(0,1): share {0,1}, level2 (wmax 0.6)
+      final_weights_per_sample: false
+
+    lat_dc:
+      # 18240×384 — not passed to after_sample; saved only at epoch end
+      weights_evolution:
+        - [0, 0]    # duo group0(0,1) → CNN group0: share {0,1}, level2 (wmax 0.6)
+      final_weights_per_sample: false
 
 
 # ── Visualization configuration ───────────────────────────────────────────────
@@ -65,10 +107,10 @@ record:
 visualize:
 
   # Which samples and epochs to plot (comment out to plot all)
-  visualize_samples: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  visualize_samples: [0]
   visualize_epoch:   [0]
 
-  track_weight_delta: false
+  track_weight_delta: true
 
   # ── Neuron groups ───────────────────────────────────────────────────────────
 
@@ -77,45 +119,112 @@ visualize:
     input:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: []
+      membrane_potential: [0]
       membrane_potential_variables: ["v"]
 
-    hidden:
+    cnn_hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential:
-        - [0  ]
-        - [350]
-      membrane_potential_variables: ["v", "vth", "is_winner"]
+      membrane_potential: [0, 1, 2, 3, 188, 189, 190, 191, 380, 381, 382, 383]
+      membrane_potential_variables: ["v", "vth", "trace_r"]
 
-    # output:
-    #   spike_raster:       true
-    #   mean_firing_rate:   true
-    #   membrane_potential: []
-    #   membrane_potential_variables: ["v"]
+    duo_hidden:
+      spike_raster:       true
+      mean_firing_rate:   true
+      membrane_potential: [0, 1, 2, 3, 18236, 18237, 18238, 18239]
+      membrane_potential_variables: ["v", "vth", "trace_r"]
 
-  # ── Synapse groups ──────────────────────────────────────────────────────────
+  # ── Synapses ─────────────────────────────────────────────────────────────────
 
   synapses:
 
-    in->hid:
+    in->cnn:
       weights_evolution:
         - [0,   0]
-        - [100, 100]
-        - [350, 350]
+        - [665, 380]
       final_weights_per_sample: true
 
-    # hid->out:
-    #   weights_evolution:
-    #     - [0, 0]
-    #     - [50, 10]
-    #   final_weights_per_sample: false
+    in->duo:
+      weights_evolution:
+        - [0, 0]
+        - [7, 0]
+      final_weights_per_sample: false
 
-  # ── Per-neuron incoming weight plots ────────────────────────────────────────
-  # Keyed by synapse name; lists post-synaptic neuron indices to plot.
+    lat_cc:
+      weights_evolution:
+        - [0,   1]
+        - [0,   4]
+        - [0,   8]
+        - [380, 0]
+        - [376, 0]
+      final_weights_per_sample: true
+
+    lat_dd:
+      weights_evolution:
+        - [0, 1]
+        - [0, 4]
+      final_weights_per_sample: false
+
+    lat_cd:
+      weights_evolution:
+        - [0, 0]
+      final_weights_per_sample: false
+
+    lat_dc:
+      weights_evolution:
+        - [0, 0]
+      final_weights_per_sample: false
+
+  # ── Per-neuron incoming weight plots ─────────────────────────────────────────
+  # List post-synaptic neuron indices whose incoming weight vectors to plot.
 
   weights_per_neuron:
-    in->hid:
+
+    in->cnn:
+      # Group 0 (ch 0), group 47 (ch 47), group 95 (ch 95, wraparound)
       - 0
-      - 100
-      - 350
+      - 1
+      - 2
+      - 3
+      - 188
+      - 380
+      - 381
+      - 382
+      - 383
+
+    in->duo:
+      # First duo group (pair 0,1)
+      - 0
+      - 1
+      - 2
+      - 3
+
+    lat_cc:
+      # Group 0, group 47, group 95 — covers normal and wraparound inhibition targets
+      - 0
+      - 1
+      - 2
+      - 3
+      - 188
+      - 380
+      - 381
+      - 382
+      - 383
+
+    lat_dd:
+      - 0
+      - 1
+      - 2
+      - 3
+
+    lat_cd:
+      - 0
+      - 1
+      - 2
+      - 3
+
+    lat_dc:
+      - 0
+      - 1
+      - 2
+      - 3
