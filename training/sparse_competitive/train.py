@@ -3,6 +3,7 @@ np.random.seed(42)
 from brian2 import *
 import os
 import sys
+import itertools
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
@@ -15,15 +16,12 @@ start = time.time()
 # Dataset
 # ============================================================
 wav_files = [
-    "datasets/vox1_single_person_nano_2/dev/00008.wav",
-    "datasets/vox1_10person_fingerprint/wav_dev/id10397/id10397_00002/00003.wav",
-    "datasets/vox1_cleaned/wav_dev/id10008/id10008_00009/00002.wav",
-    "datasets/vox1_cleaned/wav_dev/id10019/id10019_00005/00003.wav",
-    "datasets/vox1_cleaned/wav_dev/id11251/id11251_00005/00001.wav"
+    "datasets/vox1_single_person_nano_2/dev/00001.wav",
+    "datasets/vox1_single_person_nano_2/dev/00002.wav"
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 1
+EPOCHS   = 8
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -35,9 +33,25 @@ NEURONS_PER_CH  = 7             # 4 sustained + 2 onset + 1 phase
 N_IN            = 672           # N_CH * NEURONS_PER_CH
 NEURONS_PER_GRP = 4             # hidden neurons per group
 
-N_DUO_GROUPS = N_CH * (N_CH - 1) // 2   # 4560
-N_CNN        = N_CH * NEURONS_PER_GRP    # 384
-N_DUO        = N_DUO_GROUPS * NEURONS_PER_GRP  # 18240
+# -- CNN pathway (local spectral features) --
+# Channels are bundled into non-overlapping units of 4; each CNN group reads 3
+# consecutive units (stride 1, wraparound) → 12-channel / 84-input receptive field.
+CNN_UNIT_SIZE  = 4
+N_CNN_UNITS    = N_CH // CNN_UNIT_SIZE        # 24
+CNN_RF_UNITS   = 3
+N_CNN_GROUPS   = N_CNN_UNITS                   # 24 (one group per starting unit)
+N_CNN          = N_CNN_GROUPS * NEURONS_PER_GRP  # 96
+CNN_RF_INPUTS  = CNN_RF_UNITS * CNN_UNIT_SIZE * NEURONS_PER_CH  # 84
+
+# -- Duo pathway (relational spectral features) --
+# Channels are bundled into non-overlapping units of 8; the 12 units are split
+# into even/odd partitions, and every unordered pair within a partition forms a
+# Duo group → 16-channel / 112-input receptive field.
+DUO_UNIT_SIZE  = 8
+N_DUO_UNITS    = N_CH // DUO_UNIT_SIZE          # 12
+N_DUO_GROUPS   = 30                             # 15 even + 15 odd
+N_DUO          = N_DUO_GROUPS * NEURONS_PER_GRP  # 120
+DUO_RF_INPUTS  = 2 * DUO_UNIT_SIZE * NEURONS_PER_CH  # 112
 
 DT_SIM = 1 * ms
 
@@ -72,13 +86,17 @@ WMAX_EXC  =  1.0
 WMIN_EXC  =  0.0
 W_INIT_SUM = 2.0
 
-# -- Inhibitory lateral STDP --
-APRE_INH  =  0.002
-APOST_INH = -0.0024
+# -- Inhibitory lateral STDP (multiplicative, slower than excitatory) --
+# inhibitory_lr = 0.25 * excitatory_lr
+APRE_INH  =  0.0005
+APOST_INH = -0.0006
 WMIN_INH  =  0.0
-WMAX_L3   =  1.0   # within-group
-WMAX_L2   =  0.6   # 2 common channels
-WMAX_L1   =  0.3   # 1 common channel
+
+# -- Jaccard similarity-based lateral inhibition --
+# Two hidden neurons inhibit each other iff the Jaccard similarity of their input
+# receptive fields exceeds this threshold. Per-synapse wmax = J / J_max; since
+# neurons within a group share an identical RF, J_max = 1, so wmax = J directly.
+SIMILARITY_THRESHOLD = 0.0
 
 # -- Homeostatic normalisation (separate limits) --
 NORM_LIMIT_EXC = 2.0
@@ -91,15 +109,39 @@ NORM_LIMIT_INH = 2.0
 print("Precomputing connectivity...")
 t_conn = time.time()
 
-duo_pairs        = [(x, y) for x in range(N_CH) for y in range(x + 1, N_CH)]
-cnn_channels     = [frozenset([(k - 1) % N_CH, k, (k + 1) % N_CH]) for k in range(N_CH)]
-duo_channels     = [frozenset(p) for p in duo_pairs]
+# ── Spectral units → channel sets ─────────────────────────────────────────────
+# CNN unit u  = channels [4u, 4u+4);  Duo unit u = channels [8u, 8u+8)
+def _cnn_unit_channels(u):
+    return range(u * CNN_UNIT_SIZE, (u + 1) * CNN_UNIT_SIZE)
+
+def _duo_unit_channels(u):
+    return range(u * DUO_UNIT_SIZE, (u + 1) * DUO_UNIT_SIZE)
+
+# CNN group k reads CNN_RF_UNITS consecutive units {k, k+1, k+2} (mod N_CNN_UNITS)
+cnn_group_ch = []
+for k in range(N_CNN_GROUPS):
+    chans = []
+    for d in range(CNN_RF_UNITS):
+        chans.extend(_cnn_unit_channels((k + d) % N_CNN_UNITS))
+    cnn_group_ch.append(frozenset(chans))
+
+# Duo groups: split units into even/odd partitions, take every unordered pair
+even_units = list(range(0, N_DUO_UNITS, 2))   # [0, 2, 4, 6, 8, 10]
+odd_units  = list(range(1, N_DUO_UNITS, 2))    # [1, 3, 5, 7, 9, 11]
+duo_unit_pairs = (list(itertools.combinations(even_units, 2)) +
+                  list(itertools.combinations(odd_units, 2)))   # 15 + 15 = 30
+duo_group_ch = []
+for (ua, ub) in duo_unit_pairs:
+    duo_group_ch.append(frozenset(list(_duo_unit_channels(ua)) +
+                                  list(_duo_unit_channels(ub))))
 
 # ── Input → CNN ─────────────────────────────────────────────────────────────
-# Each CNN group k: 3 channels × 7 inputs × 4 outputs = 84 synapses per group
+# Each CNN group: 12 channels × 7 inputs × 4 outputs = 336 synapses per group.
+# Loop order group→sorted channels→inputs→outputs keeps the regular layout that
+# the vectorised excitatory normalisation index trick relies on.
 _cnn_src, _cnn_tgt = [], []
-for k in range(N_CH):
-    for ch in sorted(cnn_channels[k]):
+for k in range(N_CNN_GROUPS):
+    for ch in sorted(cnn_group_ch[k]):
         for n_in in range(ch * NEURONS_PER_CH, (ch + 1) * NEURONS_PER_CH):
             for n_out in range(k * NEURONS_PER_GRP, (k + 1) * NEURONS_PER_GRP):
                 _cnn_src.append(n_in)
@@ -108,18 +150,18 @@ cnn_src_ih = np.array(_cnn_src, dtype=np.int32)
 cnn_tgt_ih = np.array(_cnn_tgt, dtype=np.int32)
 
 # ── Input → Duo ─────────────────────────────────────────────────────────────
-# Each Duo group: 2 channels × 7 inputs × 4 outputs = 56 synapses per group
+# Each Duo group: 16 channels × 7 inputs × 4 outputs = 448 synapses per group.
 _duo_src, _duo_tgt = [], []
-for idx, (x, y) in enumerate(duo_pairs):
-    for ch in [x, y]:
+for g in range(N_DUO_GROUPS):
+    for ch in sorted(duo_group_ch[g]):
         for n_in in range(ch * NEURONS_PER_CH, (ch + 1) * NEURONS_PER_CH):
-            for n_out in range(idx * NEURONS_PER_GRP, (idx + 1) * NEURONS_PER_GRP):
+            for n_out in range(g * NEURONS_PER_GRP, (g + 1) * NEURONS_PER_GRP):
                 _duo_src.append(n_in)
                 _duo_tgt.append(n_out)
 duo_src_ih = np.array(_duo_src, dtype=np.int32)
 duo_tgt_ih = np.array(_duo_tgt, dtype=np.int32)
 
-# ── Lateral inhibition ───────────────────────────────────────────────────────
+# ── Lateral inhibition: Jaccard similarity (pathway-agnostic) ─────────────────
 # Helper: add all 4×4 directed connections for a group pair
 def _add_pairs(a_grp, b_grp, wmax_val, src_list, tgt_list, wmax_list, n_per_grp=NEURONS_PER_GRP):
     a_ns = np.arange(a_grp * n_per_grp, (a_grp + 1) * n_per_grp)
@@ -129,91 +171,68 @@ def _add_pairs(a_grp, b_grp, wmax_val, src_list, tgt_list, wmax_list, n_per_grp=
     src_list.append(srcs);  tgt_list.append(tgts)
     wmax_list.append(np.full(n_per_grp * n_per_grp, wmax_val))
 
+def _jaccard(a, b):
+    inter = len(a & b)
+    return inter / len(a | b) if inter > 0 else 0.0
+
 lat_cc_s, lat_cc_t, lat_cc_w = [], [], []
 lat_dd_s, lat_dd_t, lat_dd_w = [], [], []
 lat_cd_s, lat_cd_t, lat_cd_w = [], [], []
 lat_dc_s, lat_dc_t, lat_dc_w = [], [], []
 
-# Level 3: within-group (i≠j)
+# Within-group: identical receptive field ⇒ J = 1 = J_max ⇒ wmax = 1.0 (i≠j).
 # Use ni/nj to avoid leaking loop vars into Brian2's run namespace (conflicts with
 # Brian2's internal 'i' = pre-synaptic index, causing a resolution warning).
-for k in range(N_CH):
+for k in range(N_CNN_GROUPS):
     ns = np.arange(k * NEURONS_PER_GRP, (k + 1) * NEURONS_PER_GRP)
     for ni in ns:
         for nj in ns:
             if ni != nj:
                 lat_cc_s.append(np.array([ni])); lat_cc_t.append(np.array([nj]))
-                lat_cc_w.append(np.array([WMAX_L3]))
+                lat_cc_w.append(np.array([1.0]))
 
-for idx in range(N_DUO_GROUPS):
-    ns = np.arange(idx * NEURONS_PER_GRP, (idx + 1) * NEURONS_PER_GRP)
+for g in range(N_DUO_GROUPS):
+    ns = np.arange(g * NEURONS_PER_GRP, (g + 1) * NEURONS_PER_GRP)
     for ni in ns:
         for nj in ns:
             if ni != nj:
                 lat_dd_s.append(np.array([ni])); lat_dd_t.append(np.array([nj]))
-                lat_dd_w.append(np.array([WMAX_L3]))
+                lat_dd_w.append(np.array([1.0]))
 
-# CNN–CNN: all unique pairs (k < m), connection level by channel-set intersection.
-# Using absolute pair indices avoids the wraparound dedup bug that k<(k+1)%N_CH has.
-for k in range(N_CH):
-    for m in range(k + 1, N_CH):
-        n_common = len(cnn_channels[k] & cnn_channels[m])
-        if n_common == 2:
-            _add_pairs(k, m, WMAX_L2, lat_cc_s, lat_cc_t, lat_cc_w)
-            _add_pairs(m, k, WMAX_L2, lat_cc_s, lat_cc_t, lat_cc_w)
-        elif n_common == 1:
-            _add_pairs(k, m, WMAX_L1, lat_cc_s, lat_cc_t, lat_cc_w)
-            _add_pairs(m, k, WMAX_L1, lat_cc_s, lat_cc_t, lat_cc_w)
-        # n_common == 0: no connection
+# CNN–CNN cross pairs
+for k in range(N_CNN_GROUPS):
+    for m in range(k + 1, N_CNN_GROUPS):
+        J = _jaccard(cnn_group_ch[k], cnn_group_ch[m])
+        if J > SIMILARITY_THRESHOLD:
+            _add_pairs(k, m, J, lat_cc_s, lat_cc_t, lat_cc_w)
+            _add_pairs(m, k, J, lat_cc_s, lat_cc_t, lat_cc_w)
 
-# CNN–Duo level 2 and 1
-for k in range(N_CH):
-    cnn_set = cnn_channels[k]
-    for idx, duo_set in enumerate(duo_channels):
-        n_common = len(cnn_set & duo_set)
-        if n_common == 2:
-            _add_pairs(k, idx, WMAX_L2, lat_cd_s, lat_cd_t, lat_cd_w)
-            _add_pairs(idx, k, WMAX_L2, lat_dc_s, lat_dc_t, lat_dc_w)
-        elif n_common == 1:
-            _add_pairs(k, idx, WMAX_L1, lat_cd_s, lat_cd_t, lat_cd_w)
-            _add_pairs(idx, k, WMAX_L1, lat_dc_s, lat_dc_t, lat_dc_w)
+# Duo–Duo cross pairs
+for g in range(N_DUO_GROUPS):
+    for h in range(g + 1, N_DUO_GROUPS):
+        J = _jaccard(duo_group_ch[g], duo_group_ch[h])
+        if J > SIMILARITY_THRESHOLD:
+            _add_pairs(g, h, J, lat_dd_s, lat_dd_t, lat_dd_w)
+            _add_pairs(h, g, J, lat_dd_s, lat_dd_t, lat_dd_w)
 
-# Duo–Duo level 1: enumerate pairs sharing exactly 1 channel via channel index
-channel_to_duo = [[] for _ in range(N_CH)]
-for idx, (x, y) in enumerate(duo_pairs):
-    channel_to_duo[x].append(idx)
-    channel_to_duo[y].append(idx)
+# CNN–Duo cross pairs (CNN→Duo in cd, Duo→CNN in dc — bidirectional)
+for k in range(N_CNN_GROUPS):
+    for g in range(N_DUO_GROUPS):
+        J = _jaccard(cnn_group_ch[k], duo_group_ch[g])
+        if J > SIMILARITY_THRESHOLD:
+            _add_pairs(k, g, J, lat_cd_s, lat_cd_t, lat_cd_w)
+            _add_pairs(g, k, J, lat_dc_s, lat_dc_t, lat_dc_w)
 
-for ch in range(N_CH):
-    grps = np.array(channel_to_duo[ch], dtype=np.int32)
-    if len(grps) < 2:
-        continue
-    ia, ib = np.triu_indices(len(grps), k=1)
-    a_grps = grps[ia];  b_grps = grps[ib]
-    a_ns = a_grps[:, None] * NEURONS_PER_GRP + np.arange(NEURONS_PER_GRP)[None, :]  # (n,4)
-    b_ns = b_grps[:, None] * NEURONS_PER_GRP + np.arange(NEURONS_PER_GRP)[None, :]  # (n,4)
-    # A→B
-    src_ab = np.repeat(a_ns, NEURONS_PER_GRP, axis=1).reshape(-1)
-    tgt_ab = np.tile(b_ns, (1, NEURONS_PER_GRP)).reshape(-1)
-    # B→A
-    src_ba = np.repeat(b_ns, NEURONS_PER_GRP, axis=1).reshape(-1)
-    tgt_ba = np.tile(a_ns, (1, NEURONS_PER_GRP)).reshape(-1)
-    lat_dd_s.append(np.concatenate([src_ab, src_ba]))
-    lat_dd_t.append(np.concatenate([tgt_ab, tgt_ba]))
-    lat_dd_w.append(np.full(len(src_ab) + len(src_ba), WMAX_L1))
+def _cat_idx(lst):
+    return np.concatenate(lst).astype(np.int32) if lst else np.array([], dtype=np.int32)
 
-lat_cc_src = np.concatenate(lat_cc_s).astype(np.int32)
-lat_cc_tgt = np.concatenate(lat_cc_t).astype(np.int32)
-lat_cc_wmax = np.concatenate(lat_cc_w)
-lat_dd_src = np.concatenate(lat_dd_s).astype(np.int32)
-lat_dd_tgt = np.concatenate(lat_dd_t).astype(np.int32)
-lat_dd_wmax = np.concatenate(lat_dd_w)
-lat_cd_src = np.concatenate(lat_cd_s).astype(np.int32)
-lat_cd_tgt = np.concatenate(lat_cd_t).astype(np.int32)
-lat_cd_wmax = np.concatenate(lat_cd_w)
-lat_dc_src = np.concatenate(lat_dc_s).astype(np.int32)
-lat_dc_tgt = np.concatenate(lat_dc_t).astype(np.int32)
-lat_dc_wmax = np.concatenate(lat_dc_w)
+def _cat_w(lst):
+    return np.concatenate(lst).astype(float) if lst else np.array([], dtype=float)
+
+lat_cc_src, lat_cc_tgt, lat_cc_wmax = _cat_idx(lat_cc_s), _cat_idx(lat_cc_t), _cat_w(lat_cc_w)
+lat_dd_src, lat_dd_tgt, lat_dd_wmax = _cat_idx(lat_dd_s), _cat_idx(lat_dd_t), _cat_w(lat_dd_w)
+lat_cd_src, lat_cd_tgt, lat_cd_wmax = _cat_idx(lat_cd_s), _cat_idx(lat_cd_t), _cat_w(lat_cd_w)
+lat_dc_src, lat_dc_tgt, lat_dc_wmax = _cat_idx(lat_dc_s), _cat_idx(lat_dc_t), _cat_w(lat_dc_w)
 
 print(f"  S_in_cnn : {len(cnn_src_ih):>10,} synapses")
 print(f"  S_in_duo : {len(duo_src_ih):>10,} synapses")
@@ -245,6 +264,10 @@ w_lat_cc = np.zeros(len(lat_cc_src))
 w_lat_dd = np.zeros(len(lat_dd_src))
 w_lat_cd = np.zeros(len(lat_cd_src))
 w_lat_dc = np.zeros(len(lat_dc_src))
+
+# Snapshot the initial flat excitatory weights (used for epoch-0 init weight matrices)
+w_init_cnn, w_init_duo = w_in_cnn.copy(), w_in_duo.copy()
+# w_init_lat captured below, after inhibitory weights are warm-started
 
 # ============================================================
 # Build Brian2 network
@@ -354,17 +377,19 @@ recorder.build()
 
 print("Building normalisation index caches...")
 
-# Excitatory CNN: each CNN neuron has exactly 21 incoming (3 ch × 7 neurons)
-# Synapse order: for group k, block starts at k*84; neuron k*4+off at k*84+off+4*m, m=0..20
-_cnn_base = (np.arange(N_CNN) // NEURONS_PER_GRP) * (3 * NEURONS_PER_CH * NEURONS_PER_GRP)
-_cnn_off  = np.arange(N_CNN) % NEURONS_PER_GRP
-cnn_exc_idx = _cnn_base[:, None] + _cnn_off[:, None] + NEURONS_PER_GRP * np.arange(3 * NEURONS_PER_CH)[None, :]
+_CNN_FANIN = CNN_RF_UNITS * CNN_UNIT_SIZE * NEURONS_PER_CH   # 84 incoming / CNN neuron
+_DUO_FANIN = 2 * DUO_UNIT_SIZE * NEURONS_PER_CH              # 112 incoming / Duo neuron
 
-# Excitatory Duo: each Duo neuron has exactly 14 incoming (2 ch × 7 neurons)
-# Synapse order: for group idx, block starts at idx*56; neuron idx*4+off at idx*56+off+4*m, m=0..13
-_duo_base = (np.arange(N_DUO) // NEURONS_PER_GRP) * (2 * NEURONS_PER_CH * NEURONS_PER_GRP)
+# Excitatory CNN: synapse order group→channel→input→output means neuron k*4+off
+# owns indices k*(_CNN_FANIN*4) + off + 4*m, m = 0.._CNN_FANIN-1.
+_cnn_base = (np.arange(N_CNN) // NEURONS_PER_GRP) * (_CNN_FANIN * NEURONS_PER_GRP)
+_cnn_off  = np.arange(N_CNN) % NEURONS_PER_GRP
+cnn_exc_idx = _cnn_base[:, None] + _cnn_off[:, None] + NEURONS_PER_GRP * np.arange(_CNN_FANIN)[None, :]
+
+# Excitatory Duo: same regular layout with _DUO_FANIN incoming per neuron.
+_duo_base = (np.arange(N_DUO) // NEURONS_PER_GRP) * (_DUO_FANIN * NEURONS_PER_GRP)
 _duo_off  = np.arange(N_DUO) % NEURONS_PER_GRP
-duo_exc_idx = _duo_base[:, None] + _duo_off[:, None] + NEURONS_PER_GRP * np.arange(2 * NEURONS_PER_CH)[None, :]
+duo_exc_idx = _duo_base[:, None] + _duo_off[:, None] + NEURONS_PER_GRP * np.arange(_DUO_FANIN)[None, :]
 
 # Inhibitory: sorted-target approach for fast per-neuron index lookup
 def _build_bounds(tgt_arr, n_post):
@@ -376,6 +401,39 @@ _ord_cc, _bnd_cc = _build_bounds(lat_cc_tgt, N_CNN)
 _ord_dc, _bnd_dc = _build_bounds(lat_dc_tgt, N_CNN)
 _ord_dd, _bnd_dd = _build_bounds(lat_dd_tgt, N_DUO)
 _ord_cd, _bnd_cd = _build_bounds(lat_cd_tgt, N_DUO)
+
+# ── Inhibitory weight warm-start ──────────────────────────────────────────────
+# For each post-neuron, spread NORM_LIMIT_INH evenly across all its incoming
+# inhibitory synapses — the same joint budget that normalize_weights enforces
+# (lat_cc + lat_dc for CNN neurons; lat_dd + lat_cd for Duo neurons).
+# Clipped to per-synapse wmax_inh_syn so no individual weight exceeds its cap.
+def _init_inh_uniform(n_post,
+                      ord_a, bnd_a, w_a, wmax_a,
+                      ord_b, bnd_b, w_b, wmax_b,
+                      limit):
+    for j in range(n_post):
+        idx_a   = ord_a[bnd_a[j]:bnd_a[j + 1]]
+        idx_b   = ord_b[bnd_b[j]:bnd_b[j + 1]]
+        n_total = len(idx_a) + len(idx_b)
+        if n_total == 0:
+            continue
+        uniform_w = limit / n_total
+        if len(idx_a) > 0:
+            w_a[idx_a] = np.minimum(uniform_w, wmax_a[idx_a])
+        if len(idx_b) > 0:
+            w_b[idx_b] = np.minimum(uniform_w, wmax_b[idx_b])
+
+_init_inh_uniform(N_CNN,
+                  _ord_cc, _bnd_cc, w_lat_cc, lat_cc_wmax,
+                  _ord_dc, _bnd_dc, w_lat_dc, lat_dc_wmax,
+                  NORM_LIMIT_INH)
+_init_inh_uniform(N_DUO,
+                  _ord_dd, _bnd_dd, w_lat_dd, lat_dd_wmax,
+                  _ord_cd, _bnd_cd, w_lat_cd, lat_cd_wmax,
+                  NORM_LIMIT_INH)
+
+# Capture the warm-started values as the epoch-0 init snapshot
+w_init_lat = (w_lat_cc.copy(), w_lat_dd.copy(), w_lat_cd.copy(), w_lat_dc.copy())
 
 
 @network_operation(dt=500 * ms, when='end')
@@ -525,27 +583,34 @@ for epoch_idx in range(EPOCHS):
         w_lat_dc = np.array(S_lat_dc.w_inh)
 
         # ── Record: after ──────────────────────────────────────────────────────
-        # Only pass small matrices per-sample; lat_dd and in->duo are too large
-        recorder.after_sample(
-            sample_idx,
-            duration_s,
-            w_matrices={
-                "in->cnn": _to_matrix(cnn_src_ih, cnn_tgt_ih, w_in_cnn, N_IN, N_CNN),
-                "lat_cc":  _to_matrix(lat_cc_src, lat_cc_tgt, w_lat_cc, N_CNN, N_CNN),
-            }
-        )
+        # All matrices are small now (max 672×120) — record every synapse group.
+        all_w_matrices = {
+            "in->cnn": _to_matrix(cnn_src_ih, cnn_tgt_ih, w_in_cnn, N_IN,  N_CNN),
+            "in->duo": _to_matrix(duo_src_ih, duo_tgt_ih, w_in_duo, N_IN,  N_DUO),
+            "lat_cc":  _to_matrix(lat_cc_src, lat_cc_tgt, w_lat_cc, N_CNN, N_CNN),
+            "lat_dd":  _to_matrix(lat_dd_src, lat_dd_tgt, w_lat_dd, N_DUO, N_DUO),
+            "lat_cd":  _to_matrix(lat_cd_src, lat_cd_tgt, w_lat_cd, N_CNN, N_DUO),
+            "lat_dc":  _to_matrix(lat_dc_src, lat_dc_tgt, w_lat_dc, N_DUO, N_CNN),
+        }
+        recorder.after_sample(sample_idx, duration_s, w_matrices=all_w_matrices)
 
     # ── End of epoch ──────────────────────────────────────────────────────────
+    init_weights = None
+    if epoch_idx == 0:
+        _ic, _id, _il = w_init_cnn, w_init_duo, w_init_lat
+        init_weights = {
+            "in->cnn": _to_matrix(cnn_src_ih, cnn_tgt_ih, _ic,    N_IN,  N_CNN),
+            "in->duo": _to_matrix(duo_src_ih, duo_tgt_ih, _id,    N_IN,  N_DUO),
+            "lat_cc":  _to_matrix(lat_cc_src, lat_cc_tgt, _il[0], N_CNN, N_CNN),
+            "lat_dd":  _to_matrix(lat_dd_src, lat_dd_tgt, _il[1], N_DUO, N_DUO),
+            "lat_cd":  _to_matrix(lat_cd_src, lat_cd_tgt, _il[2], N_CNN, N_DUO),
+            "lat_dc":  _to_matrix(lat_dc_src, lat_dc_tgt, _il[3], N_DUO, N_CNN),
+        }
     recorder.save_epoch(
         epoch_idx,
         save_dir=SAVE_DIR,
-        final_weights={
-            "in->cnn": _to_matrix(cnn_src_ih, cnn_tgt_ih, w_in_cnn, N_IN, N_CNN),
-            "lat_cc":  _to_matrix(lat_cc_src, lat_cc_tgt, w_lat_cc, N_CNN, N_CNN),
-            "lat_cd":  _to_matrix(lat_cd_src, lat_cd_tgt, w_lat_cd, N_CNN, N_DUO),
-            "lat_dc":  _to_matrix(lat_dc_src, lat_dc_tgt, w_lat_dc, N_DUO, N_CNN),
-        },
-        init_weights=None,
+        final_weights=all_w_matrices,
+        init_weights=init_weights,
     )
 
 
