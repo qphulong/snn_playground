@@ -5,16 +5,15 @@
 # visualize: drives visualize.py — what plots to produce
 #
 # ── FOCUS: 1 far-spanning Duo group ↔ 2 CNN groups ───────────
-#   Duo group 4  : neurons 16-19
-#                  DU0  (ch  0- 7) + DU10 (ch 80-87)
-#                  maximally spread even pair
+#   Duo group 8  : neurons 32-35
+#                  units (2, 10) → ch 16-23 + ch 80-87
 #
-#   CNN group  0 : neurons  0- 3, ch  0-11  → overlaps DU0
-#                  J(CNN0,  Duo4) ≈ 8/20 = 0.40 (DU0 side)
-#   CNN group 20 : neurons 80-83, ch 80-91  → overlaps DU10
-#                  J(CNN20, Duo4) ≈ 8/20 = 0.40 (DU10 side)
+#   CNN group  3 : neurons 12-15, ch 12-23  → overlaps unit 2
+#                  J(CNN3,  Duo8) = 8/20 = 0.40
+#   CNN group 20 : neurons 80-83, ch 80-91  → overlaps unit 10
+#                  J(CNN20, Duo8) = 8/20 = 0.40
 #
-#   Coupling     : lat_cd / lat_dc between each CNN group and Duo4
+#   Coupling     : lat_cd / lat_dc between each CNN group and Duo8
 #                  within-group lat_cc / lat_dd
 #                  excitatory drive via in->cnn / in->duo
 #
@@ -44,13 +43,13 @@ record:
     cnn_hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [0, 1, 2, 3, 80, 81, 82, 83]   # CNN group 0 (n0-3) + CNN group 20 (n80-83)
+      membrane_potential: [12, 13, 14, 15, 80, 81, 82, 83]   # CNN group 3 (n12-15) + CNN group 20 (n80-83)
       membrane_potential_variables: ["v", "vth", "trace_r"]
 
     duo_hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [16, 17, 18, 19]                # Duo group 4 — DU0+DU10
+      membrane_potential: [32, 33, 34, 35]                    # Duo group 8 — units (2,10)
       membrane_potential_variables: ["v", "vth", "trace_r"]
 
   # ── Synapses ─────────────────────────────────────────────────────────────────
@@ -107,13 +106,13 @@ visualize:
     cnn_hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [0, 1, 2, 3, 80, 81, 82, 83]
+      membrane_potential: [12, 13, 14, 15, 80, 81, 82, 83]
       membrane_potential_variables: ["v", "vth", "trace_r"]
 
     duo_hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [16, 17, 18, 19]
+      membrane_potential: [32, 33, 34, 35]
       membrane_potential_variables: ["v", "vth", "trace_r"]
 
   # ── Synapses ─────────────────────────────────────────────────────────────────
@@ -154,48 +153,48 @@ visualize:
   weights_per_neuron:
 
     in->cnn:
-      - 0
-      - 1
-      - 2
-      - 3
+      - 12
+      - 13
+      - 14
+      - 15
       - 80
       - 81
       - 82
       - 83
 
     in->duo:
-      - 16
-      - 17
-      - 18
-      - 19
+      - 32
+      - 33
+      - 34
+      - 35
 
     lat_cc:
-      - 0
-      - 1
-      - 2
-      - 3
+      - 12
+      - 13
+      - 14
+      - 15
       - 80
       - 81
       - 82
       - 83
 
     lat_dd:
-      - 16
-      - 17
-      - 18
-      - 19
+      - 32
+      - 33
+      - 34
+      - 35
 
     lat_cd:
-      - 16
-      - 17
-      - 18
-      - 19
+      - 32
+      - 33
+      - 34
+      - 35
 
     lat_dc:
-      - 0
-      - 1
-      - 2
-      - 3
+      - 12
+      - 13
+      - 14
+      - 15
       - 80
       - 81
       - 82

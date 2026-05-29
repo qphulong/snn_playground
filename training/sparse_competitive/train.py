@@ -91,16 +91,18 @@ W_INIT_SUM = 2.0
 APRE_INH  =  0.0005
 APOST_INH = -0.0006
 WMIN_INH  =  0.0
+WMAX_INH  =  1.0    # global ceiling; effective per-synapse ceiling = WMAX_INH * J
 
 # -- Jaccard similarity-based lateral inhibition --
-# Two hidden neurons inhibit each other iff the Jaccard similarity of their input
-# receptive fields exceeds this threshold. Per-synapse wmax = J / J_max; since
-# neurons within a group share an identical RF, J_max = 1, so wmax = J directly.
+# Trace increments and weight ceiling both scale with J:
+#   apre_inh  += APRE_INH  * J  (per pre-spike)
+#   apost_inh += APOST_INH * J  (per post-spike)
+#   ceiling    = WMAX_INH  * J  (per synapse)
+# LTP at w=0 scales as WMAX_INH * J^2; LTD scales as J * w.
 SIMILARITY_THRESHOLD = 0.0
 
-# -- Homeostatic normalisation (separate limits) --
+# -- Homeostatic normalisation (excitatory only) --
 NORM_LIMIT_EXC = 2.0
-NORM_LIMIT_INH = 2.0
 
 # ============================================================
 # Connectivity precomputation
@@ -327,18 +329,18 @@ _inh_model = """
 w_inh          : 1
 dapre_inh/dt   = -apre_inh  / taupre  : 1 (event-driven)
 dapost_inh/dt  = -apost_inh / taupost : 1 (event-driven)
-wmax_inh_syn   : 1
+jaccard_syn    : 1
 """
 _on_pre_inh  = (f"v_post -= w_inh\n"
-                f"apre_inh += {APRE_INH}\n"
-                f"w_inh = clip(w_inh + apost_inh*(w_inh - {WMIN_INH}), {WMIN_INH}, wmax_inh_syn)")
-_on_post_inh = (f"apost_inh += {APOST_INH}\n"
-                f"w_inh = clip(w_inh + apre_inh*(wmax_inh_syn - w_inh), {WMIN_INH}, wmax_inh_syn)")
+                f"apre_inh += {APRE_INH} * jaccard_syn\n"
+                f"w_inh = clip(w_inh + apost_inh*(w_inh - {WMIN_INH}), {WMIN_INH}, {WMAX_INH}*jaccard_syn)")
+_on_post_inh = (f"apost_inh += {APOST_INH} * jaccard_syn\n"
+                f"w_inh = clip(w_inh + apre_inh*({WMAX_INH}*jaccard_syn - w_inh), {WMIN_INH}, {WMAX_INH}*jaccard_syn)")
 
-def _make_inh_syn(pre, post, src_arr, tgt_arr, wmax_arr):
+def _make_inh_syn(pre, post, src_arr, tgt_arr, jaccard_arr):
     S = Synapses(pre, post, model=_inh_model, on_pre=_on_pre_inh, on_post=_on_post_inh)
     S.connect(i=src_arr, j=tgt_arr)
-    S.wmax_inh_syn = wmax_arr
+    S.jaccard_syn = jaccard_arr
     S.w_inh = 0.0
     return S
 
@@ -375,8 +377,6 @@ recorder.build()
 # Normalisation index precomputation
 # ============================================================
 
-print("Building normalisation index caches...")
-
 _CNN_FANIN = CNN_RF_UNITS * CNN_UNIT_SIZE * NEURONS_PER_CH   # 84 incoming / CNN neuron
 _DUO_FANIN = 2 * DUO_UNIT_SIZE * NEURONS_PER_CH              # 112 incoming / Duo neuron
 
@@ -391,48 +391,7 @@ _duo_base = (np.arange(N_DUO) // NEURONS_PER_GRP) * (_DUO_FANIN * NEURONS_PER_GR
 _duo_off  = np.arange(N_DUO) % NEURONS_PER_GRP
 duo_exc_idx = _duo_base[:, None] + _duo_off[:, None] + NEURONS_PER_GRP * np.arange(_DUO_FANIN)[None, :]
 
-# Inhibitory: sorted-target approach for fast per-neuron index lookup
-def _build_bounds(tgt_arr, n_post):
-    order  = np.argsort(tgt_arr, kind='stable')
-    bounds = np.searchsorted(tgt_arr[order], np.arange(n_post + 1))
-    return order, bounds
-
-_ord_cc, _bnd_cc = _build_bounds(lat_cc_tgt, N_CNN)
-_ord_dc, _bnd_dc = _build_bounds(lat_dc_tgt, N_CNN)
-_ord_dd, _bnd_dd = _build_bounds(lat_dd_tgt, N_DUO)
-_ord_cd, _bnd_cd = _build_bounds(lat_cd_tgt, N_DUO)
-
-# ── Inhibitory weight warm-start ──────────────────────────────────────────────
-# For each post-neuron, spread NORM_LIMIT_INH evenly across all its incoming
-# inhibitory synapses — the same joint budget that normalize_weights enforces
-# (lat_cc + lat_dc for CNN neurons; lat_dd + lat_cd for Duo neurons).
-# Clipped to per-synapse wmax_inh_syn so no individual weight exceeds its cap.
-def _init_inh_uniform(n_post,
-                      ord_a, bnd_a, w_a, wmax_a,
-                      ord_b, bnd_b, w_b, wmax_b,
-                      limit):
-    for j in range(n_post):
-        idx_a   = ord_a[bnd_a[j]:bnd_a[j + 1]]
-        idx_b   = ord_b[bnd_b[j]:bnd_b[j + 1]]
-        n_total = len(idx_a) + len(idx_b)
-        if n_total == 0:
-            continue
-        uniform_w = limit / n_total
-        if len(idx_a) > 0:
-            w_a[idx_a] = np.minimum(uniform_w, wmax_a[idx_a])
-        if len(idx_b) > 0:
-            w_b[idx_b] = np.minimum(uniform_w, wmax_b[idx_b])
-
-_init_inh_uniform(N_CNN,
-                  _ord_cc, _bnd_cc, w_lat_cc, lat_cc_wmax,
-                  _ord_dc, _bnd_dc, w_lat_dc, lat_dc_wmax,
-                  NORM_LIMIT_INH)
-_init_inh_uniform(N_DUO,
-                  _ord_dd, _bnd_dd, w_lat_dd, lat_dd_wmax,
-                  _ord_cd, _bnd_cd, w_lat_cd, lat_cd_wmax,
-                  NORM_LIMIT_INH)
-
-# Capture the warm-started values as the epoch-0 init snapshot
+# Capture zero-init inhibitory weights as the epoch-0 init snapshot
 w_init_lat = (w_lat_cc.copy(), w_lat_dd.copy(), w_lat_cd.copy(), w_lat_dc.copy())
 
 
@@ -460,52 +419,6 @@ def normalize_weights():
         w_ed[duo_exc_idx[mask].ravel()] = w_mat_new[mask].ravel()
         S_in_duo.w = w_ed
 
-    # ── Inhibitory CNN ────────────────────────────────────────────────────────
-    w_cc = np.array(S_lat_cc.w_inh)
-    w_dc = np.array(S_lat_dc.w_inh)
-    changed_cc = np.zeros(len(w_cc), dtype=bool)
-    changed_dc = np.zeros(len(w_dc), dtype=bool)
-    for j in range(N_CNN):
-        idx_cc = _ord_cc[_bnd_cc[j]:_bnd_cc[j + 1]]
-        idx_dc = _ord_dc[_bnd_dc[j]:_bnd_dc[j + 1]]
-        wsum = (w_cc[idx_cc].sum() if len(idx_cc) > 0 else 0.0) + \
-               (w_dc[idx_dc].sum() if len(idx_dc) > 0 else 0.0)
-        if wsum > NORM_LIMIT_INH:
-            scale = NORM_LIMIT_INH / wsum
-            if len(idx_cc) > 0:
-                w_cc[idx_cc] = np.clip(w_cc[idx_cc] * scale, WMIN_INH, lat_cc_wmax[idx_cc])
-                changed_cc[idx_cc] = True
-            if len(idx_dc) > 0:
-                w_dc[idx_dc] = np.clip(w_dc[idx_dc] * scale, WMIN_INH, lat_dc_wmax[idx_dc])
-                changed_dc[idx_dc] = True
-    if changed_cc.any():
-        S_lat_cc.w_inh = w_cc
-    if changed_dc.any():
-        S_lat_dc.w_inh = w_dc
-
-    # ── Inhibitory Duo ────────────────────────────────────────────────────────
-    w_dd = np.array(S_lat_dd.w_inh)
-    w_cd = np.array(S_lat_cd.w_inh)
-    if w_dd.max() > 0 or w_cd.max() > 0:   # fast-path: skip if all zero
-        changed_dd = np.zeros(len(w_dd), dtype=bool)
-        changed_cd = np.zeros(len(w_cd), dtype=bool)
-        for j in range(N_DUO):
-            idx_dd = _ord_dd[_bnd_dd[j]:_bnd_dd[j + 1]]
-            idx_cd = _ord_cd[_bnd_cd[j]:_bnd_cd[j + 1]]
-            wsum = (w_dd[idx_dd].sum() if len(idx_dd) > 0 else 0.0) + \
-                   (w_cd[idx_cd].sum() if len(idx_cd) > 0 else 0.0)
-            if wsum > NORM_LIMIT_INH:
-                scale = NORM_LIMIT_INH / wsum
-                if len(idx_dd) > 0:
-                    w_dd[idx_dd] = np.clip(w_dd[idx_dd] * scale, WMIN_INH, lat_dd_wmax[idx_dd])
-                    changed_dd[idx_dd] = True
-                if len(idx_cd) > 0:
-                    w_cd[idx_cd] = np.clip(w_cd[idx_cd] * scale, WMIN_INH, lat_cd_wmax[idx_cd])
-                    changed_cd[idx_cd] = True
-        if changed_dd.any():
-            S_lat_dd.w_inh = w_dd
-        if changed_cd.any():
-            S_lat_cd.w_inh = w_cd
 
 
 net.add(normalize_weights)
