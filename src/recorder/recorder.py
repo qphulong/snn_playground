@@ -85,17 +85,19 @@ class Recorder:
         gcfg = self._cfg.get("groups", {}).get(name, {})
         self._groups[name] = {"group": group, "cfg": gcfg, "mon": {}}
 
-    def track_synapses(self, name, syn, src_array, tgt_array):
+    def track_synapses(self, name, syn, src_array, tgt_array, weight_var="w"):
         """
         Register a Synapses object.
         'name' must match the key under 'synapses:' in record_config.yaml.
         src_array / tgt_array are np.array(S.i) / np.array(S.j) pre-computed
         before the training loop.
+        weight_var: name of the weight state variable to snapshot (default "w";
+                    use "w_inh" for inhibitory synapses).
         """
         scfg = self._cfg.get("synapses", {}).get(name, {})
         self._synapses[name] = {
             "syn": syn, "src": src_array, "tgt": tgt_array,
-            "cfg": scfg, "mon": {}
+            "cfg": scfg, "mon": {}, "weight_var": weight_var
         }
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -156,7 +158,7 @@ class Recorder:
                     def _snap(t):
                         m     = e["mon"]
                         t_ms  = float(t / ms)
-                        w_arr = np.array(e["syn"].w)
+                        w_arr = np.array(getattr(e["syn"], e["weight_var"]))
                         m["we_snap_times"].append(t_ms)
                         for k, fidx in enumerate(m["we_pair_flat_idx"]):
                             val = float(w_arr[fidx]) if fidx is not None else float("nan")

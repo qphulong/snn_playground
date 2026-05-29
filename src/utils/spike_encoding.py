@@ -14,6 +14,7 @@ def compute_spike_input_current(
     sust_spread_max=1.4,
     audio_sample_rate=16000,
     simulation_sample_rate=1000,
+    num_filters=100,
 ):
     """
     Convert an audio file into a downsampled input current matrix for a spiking neural network.
@@ -91,7 +92,7 @@ def compute_spike_input_current(
         total simulation duration in Brian2 timesteps.
     """
 
-    feats = auditory_frontend(audio_path)
+    feats = auditory_frontend(audio_path, num_filters=num_filters)
 
     E = feats["E"]
     dE = feats["dE"]
