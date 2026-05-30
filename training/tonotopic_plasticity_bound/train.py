@@ -43,8 +43,8 @@ SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Hyperparameters
 # ============================================================
 
-N_IN = 700
-N_H  = 700
+N_IN = 672   # 96 channels × 7 neurons/channel
+N_H  = 672
 
 DT_SIM = 1 * ms
 
@@ -198,11 +198,10 @@ eqs_h = f"""
 dv/dt       = -v / tau_h + sigma_noise * xi                       : 1
 dvth/dt     = -(vth - {vth_rest}) / tau_vth                       : 1
 dtrace_r/dt = -trace_r / tau_r                                    : 1
-is_winner                                                         : boolean
 """
 G_h = NeuronGroup(
     N_H, eqs_h,
-    threshold="v > vth and is_winner",
+    threshold="v > vth",
     reset=f"v=0; vth=vth+{vth_jump}; trace_r=1;",
     method="euler"   # no refractory — trace_r provides soft refractoriness
 )
@@ -266,29 +265,7 @@ S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
 S_hh.w_inh         = w_hh[_src_hh, _tgt_hh]   # start at 0
 
-# ── Custom network operations ─────────────────────────────────────────────────
-#
-# Add any custom @network_operation here. These stay in train.py because
-# they are architecture-specific logic, not recording logic.
-#
-@network_operation(when="before_thresholds")
-def determine_winner():
-    v   = G_h.v[:]
-    vth = G_h.vth[:]
-    crossed = v > vth
-    K = 35
-    if np.any(crossed):
-        candidates = np.where(crossed)[0]
-        sorted_idx = candidates[np.argsort(vth[candidates])]
-        winners    = sorted_idx[:K]
-        G_h.is_winner[:]       = False
-        G_h.is_winner[winners] = True
-        losers = np.setdiff1d(candidates, winners)
-        G_h.v[losers] = 0.5
-    else:
-        G_h.is_winner[:] = False
-
-net = Network(G_in, G_h, S_ih, S_hh, determine_winner)
+net = Network(G_in, G_h, S_ih, S_hh)
 
 
 # ============================================================
@@ -335,7 +312,7 @@ def normalize_weights():
 net.add(normalize_weights)
 
 # Snapshot the clean initial state (clock=0, v=0, a=0, vth=vth_init,
-# trace_r=0, is_winner=False, apre/apost=0, empty monitors).
+# trace_r=0, apre/apost=0, empty monitors).
 # net.restore('init') before every sample brings the network back to this state.
 G_h.vth = vth_init   # default Brian2 init is 0; set before store
 net.store('init')
@@ -361,6 +338,7 @@ for epoch_idx in range(EPOCHS):
             I, T = compute_spike_input_current(
                 audio_path,
                 scale=0.8,
+                num_filters=96,
                 sustained_per_band=4,
                 onset_per_band=2,
                 phase_per_band=1,
@@ -374,7 +352,7 @@ for epoch_idx in range(EPOCHS):
         duration_s = float(T) * float(DT_SIM)
 
         # ── Reset to clean state, then inject this sample's data ──────────────
-        # restore resets: clock→0, v, a, vth, trace_r, is_winner, apre, apost,
+        # restore resets: clock→0, v, a, vth, trace_r, apre, apost,
         #                 and all monitor buffers.
         net.restore('init')
 
