@@ -26,7 +26,7 @@ record:
     hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [398,399,400,401,402]
+      membrane_potential: []
       membrane_potential_variables: [v, vth, trace_r]
 
   synapses:
@@ -60,7 +60,7 @@ visualize:
     hidden:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: [398,399,400,401,402]
+      membrane_potential: []
       membrane_potential_variables: [v, vth, trace_r]
 
   synapses:

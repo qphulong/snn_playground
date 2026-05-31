@@ -7,7 +7,6 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
-from src.utils.weights_utils import gaussian_weight_matrix
 from src.recorder import Recorder
 
 import time
@@ -77,85 +76,89 @@ taupost = 20 * ms
 # -- Excitatory weight bounds --
 wmin = 0.0
 
-# -- Tonotopic plasticity bounds — excitatory (circular Gaussian) --
-# wmax is floored at WMAX_MIN so all synapses can learn, even distant ones.
+# -- Excitatory synapse --
 WMAX_CENTER  = 1.0
-WMAX_MIN     = 0.3        # wmax range is [0.3, 1.0]
-APRE_CENTER  =  0.002
-APOST_CENTER = -0.0024
-PLAST_SIGMA  = N_IN / 5
+APRE_CENTER  =  0.0005
+APOST_CENTER = -0.0006
 
-# -- Inhibitory lateral synapse (distance-limited STDP) --
-SIGMA_INH       = N_H / 5    # Gaussian spread for connectivity and weight bounds
-W_INH_CENTER    = 0.9        # peak wmax at distance 0
-W_INH_MIN       = 0.0
-APRE_INH        = 0.002
-APOST_INH       = -0.0024
-INH_CUTOFF_MULT = 3          # connect neurons within INH_CUTOFF_MULT * SIGMA_INH
+# -- Inhibitory lateral synapse --
+W_INH_CENTER = 1.0
+W_INH_MIN    = 0.0
+APRE_INH     = 0.0005
+APOST_INH    = -0.0006
 
-# -- Weight initialisation (Gaussian, toroidal topology) --
-W_INIT_SIGMA     = N_IN / 5
-W_INIT_NOISE_STD = 0.005
-W_INIT_SUM       = 2
+# -- Tonotopic plasticity (polynomial decay: max(0, 1-(d/R)^p)) --
+R_EXC = 128
+p_EXC = 3
+R_INH = 7
+p_INH = 10000
 
 # -- Homeostatic normalisation --
-NORM_LIMIT = 2
+NORM_LIMIT_EXC = 2
+NORM_LIMIT_INH = 0.9
 
 
 # ============================================================
-# Initialise weight matrices
-#
-# TO ADD A NEW SYNAPSE GROUP: add a weight matrix here following
-# the same pattern and give it a descriptive name.
+# Pre-compute tonotopic plasticity matrices — excitatory
+# topo(d) = max(0, 1-(d/R)^p); hard cutoff at d=R_EXC.
 # ============================================================
 
-w_ih = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
-                               W_INIT_SUM, wmin, WMAX_CENTER)
-w_hh = np.zeros((N_H, N_H))   # inhibitory weights start at 0
+_i       = np.arange(N_IN).reshape(-1, 1)
+_j       = np.arange(N_H).reshape(1, -1)
+_dist_ih = np.abs(_i - _j)
+_dist_ih = np.minimum(_dist_ih, N_IN - _dist_ih)
+_topo_exc = np.maximum(0.0, 1.0 - (_dist_ih / R_EXC) ** p_EXC)
+_mask_ih  = _dist_ih <= R_EXC
+_src_ih, _tgt_ih = np.where(_mask_ih)
 
-init_weights = {"in->hid": w_ih.copy(), "hid->hid": w_hh.copy()}
-
-# ============================================================
-# Pre-compute tonotopic plasticity bound matrices — excitatory
-#
-# wmax_matrix[i,j] = WMAX_MIN + (WMAX_CENTER - WMAX_MIN) * gauss(i,j)
-#   range [0.3, 1.0] — all pairs can learn, stronger nearby.
-# Apre / Apost scale with the same raw Gaussian (peak at 0, decay with distance).
-# ============================================================
-
-_i    = np.arange(N_IN).reshape(-1, 1)
-_j    = np.arange(N_H).reshape(1, -1)
-_dist = np.abs(_i - _j)
-_dist = np.minimum(_dist, N_IN - _dist)
-_gauss = np.exp(-(_dist ** 2) / (2 * PLAST_SIGMA ** 2))
-
-wmax_matrix  = WMAX_MIN + (WMAX_CENTER - WMAX_MIN) * _gauss   # [0.3, 1.0]
-Apre_matrix  = APRE_CENTER  * _gauss
-Apost_matrix = APOST_CENTER * _gauss
-del _i, _j, _dist, _gauss
+wmax_matrix  = WMAX_CENTER  * _topo_exc
+Apre_matrix  = APRE_CENTER  * _topo_exc
+Apost_matrix = APOST_CENTER * _topo_exc
+del _i, _j, _dist_ih, _topo_exc
 
 # ============================================================
-# Pre-compute tonotopic plasticity bound matrices — inhibitory
-#
-# wmax_inh[i,j] = W_INH_CENTER * gauss_hh(i,j)  (peak at distance 0)
-# Connect only pairs within INH_CUTOFF_MULT * SIGMA_INH circular distance.
+# Pre-compute tonotopic plasticity matrices — inhibitory
+# Same formula; no self-connections (d > 0); hard cutoff at d=R_INH.
 # ============================================================
 
 _i_hh    = np.arange(N_H).reshape(-1, 1)
 _j_hh    = np.arange(N_H).reshape(1, -1)
 _dist_hh = np.abs(_i_hh - _j_hh)
 _dist_hh = np.minimum(_dist_hh, N_H - _dist_hh)
-_gauss_hh = np.exp(-(_dist_hh ** 2) / (2 * SIGMA_INH ** 2))
-
-wmax_inh_matrix  = W_INH_CENTER * _gauss_hh
-Apre_inh_matrix  = APRE_INH     * _gauss_hh
-Apost_inh_matrix = APOST_INH    * _gauss_hh
-
-_cutoff_hh       = INH_CUTOFF_MULT * SIGMA_INH
-_mask_hh         = (_dist_hh > 0) & (_dist_hh <= _cutoff_hh)
+_topo_inh = np.maximum(0.0, 1.0 - (_dist_hh / R_INH) ** p_INH)
+_mask_hh  = (_dist_hh > 0) & (_dist_hh <= R_INH)
 _src_hh, _tgt_hh = np.where(_mask_hh)
-del _i_hh, _j_hh, _dist_hh, _gauss_hh
 
+wmax_inh_matrix  = W_INH_CENTER * _topo_inh
+Apre_inh_matrix  = APRE_INH     * _topo_inh
+Apost_inh_matrix = APOST_INH    * _topo_inh
+del _i_hh, _j_hh, _dist_hh, _topo_inh
+
+# ============================================================
+# Initialise weight matrices
+# ============================================================
+
+# Excitatory: formula-shaped, column-normalised to NORM_LIMIT_EXC
+w_ih = np.zeros((N_IN, N_H))
+w_ih[_src_ih, _tgt_ih] = wmax_matrix[_src_ih, _tgt_ih]
+for _j in range(N_H):
+    _col_mask = (_tgt_ih == _j)
+    _rows = _src_ih[_col_mask]
+    _wsum = w_ih[_rows, _j].sum()
+    if _wsum > 0:
+        w_ih[_rows, _j] *= NORM_LIMIT_EXC / _wsum
+
+# Inhibitory: formula-shaped, column-normalised to NORM_LIMIT_INH
+w_hh = np.zeros((N_H, N_H))
+w_hh[_src_hh, _tgt_hh] = wmax_inh_matrix[_src_hh, _tgt_hh]
+for _j in range(N_H):
+    _col_mask = (_tgt_hh == _j)
+    _rows = _src_hh[_col_mask]
+    _wsum = w_hh[_rows, _j].sum()
+    if _wsum > 0:
+        w_hh[_rows, _j] *= NORM_LIMIT_INH / _wsum
+
+init_weights = {"in->hid": w_ih.copy(), "hid->hid": w_hh.copy()}
 
 # ============================================================
 # Build Brian2 network  (once — never rebuilt between samples)
@@ -227,7 +230,7 @@ on_pre  = "v_post += w * (1 - trace_r_post)\napre += Apre_syn\nw = clip(w + apos
 on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
 
 S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
-S_ih.connect()
+S_ih.connect(i=_src_ih, j=_tgt_ih)
 src_ih = np.array(S_ih.i)
 tgt_ih = np.array(S_ih.j)
 
@@ -238,7 +241,7 @@ S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
 # ── Inhibitory lateral synapse: hidden → hidden (tonotopic, STDP) ─────────────
 #
 # Replaces the former global voltage-clip lat synapse.
-# Connectivity is distance-limited (circular Gaussian, cutoff at 3*SIGMA_INH).
+# Connectivity is distance-limited (polynomial decay, hard cutoff at R_INH).
 # Standard Hebbian STDP: pre-before-post strengthens inhibition,
 #                        post-before-pre weakens it.
 # Inhibitory current is NOT gated by trace_r (arrives unconditionally).
@@ -294,20 +297,26 @@ recorder.track_synapses("hid->hid", S_hh, _src_hh, _tgt_hh)
 
 recorder.build()   # attaches all Brian2 monitors — call once, after all registrations
 
-# ── Periodic L1 normalisation every 500 ms (network_operation) ───────────────
-#
-# Pre-compute per-column synapse index arrays for efficient targeted writes.
-tgt_masks_ih = [np.where(tgt_ih == j)[0] for j in range(N_H)]
-wmax_syn_arr  = np.array(S_ih.wmax_syn)   # static per-synapse wmax, cache once
+# ── Periodic L1 normalisation every 50 ms — excitatory and inhibitory ────────
+tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
+tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
+wmax_syn_arr     = np.array(S_ih.wmax_syn)
+wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
-@network_operation(dt=500*ms, when='end')
+@network_operation(dt=50*ms, when='end')
 def normalize_weights():
     for j in range(N_H):
         idx   = tgt_masks_ih[j]
         w_col = np.array(S_ih.w[idx])
         wsum  = w_col.sum()
-        if wsum > NORM_LIMIT and NORM_LIMIT > 0:
-            S_ih.w[idx] = np.clip(w_col * NORM_LIMIT / wsum, wmin, wmax_syn_arr[idx])
+        if wsum > NORM_LIMIT_EXC:
+            S_ih.w[idx] = np.clip(w_col * NORM_LIMIT_EXC / wsum, wmin, wmax_syn_arr[idx])
+    for j in range(N_H):
+        idx   = tgt_masks_hh[j]
+        w_col = np.array(S_hh.w_inh[idx])
+        wsum  = w_col.sum()
+        if wsum > NORM_LIMIT_INH:
+            S_hh.w_inh[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
 
 net.add(normalize_weights)
 
@@ -380,12 +389,11 @@ for epoch_idx in range(EPOCHS):
         net.run(T * DT_SIM)
 
         # ── Extract updated weights ────────────────────────────────────────────
-        # Excitatory weights are L1-normalised every 500 ms during simulation.
+        # Both excitatory and inhibitory are L1-normalised every 50 ms.
         w_ih_new = np.zeros((N_IN, N_H))
         w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
         w_ih = w_ih_new
 
-        # Inhibitory weights are self-regulated by STDP bounds; just extract.
         w_hh_new = np.zeros((N_H, N_H))
         w_hh_new[_src_hh, _tgt_hh] = np.array(S_hh.w_inh)
         w_hh = w_hh_new
