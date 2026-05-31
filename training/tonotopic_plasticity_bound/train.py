@@ -303,7 +303,7 @@ tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
 wmax_syn_arr     = np.array(S_ih.wmax_syn)
 wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
-@network_operation(dt=50*ms, when='end')
+@network_operation(dt=500*ms, when='end')
 def normalize_weights():
     for j in range(N_H):
         idx   = tgt_masks_ih[j]
