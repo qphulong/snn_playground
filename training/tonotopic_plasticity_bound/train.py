@@ -28,9 +28,6 @@ start = time.time()
 wav_files = [
     "datasets/slicing_window_analysis/sample1/slice_00010.wav",
     "datasets/slicing_window_analysis/sample1/slice_00011.wav",
-    "datasets/slicing_window_analysis/sample1/slice_00012.wav",
-    "datasets/slicing_window_analysis/sample1/slice_00013.wav",
-    "datasets/slicing_window_analysis/sample1/slice_00014.wav",
 ]
 
 print(f"Found {len(wav_files)} wav files")
@@ -78,8 +75,8 @@ wmin = 0.0
 
 # -- Excitatory synapse --
 WMAX_CENTER  = 1.0
-APRE_CENTER  =  0.0005
-APOST_CENTER = -0.0006
+APRE_CENTER  =  0.002
+APOST_CENTER = -0.0024
 
 # -- Inhibitory lateral synapse --
 W_INH_CENTER = 1.0
