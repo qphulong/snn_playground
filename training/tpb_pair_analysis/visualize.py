@@ -392,9 +392,8 @@ def _plot_membrane_potential(data_A, keys_A, data_B, keys_B, name, epoch_idx, ep
                         ax.plot(t_w, y_w, lw=0.8, color=colors[ax_i % len(colors)], label=var)
                         ax.legend(fontsize=8, loc="upper right")
 
-                if ax_i == n_vars - 1:
-                    for col in range(2):
-                        fig.add_subplot(gs[ax_i, col]).set_xlabel("Time (ms)")
+                    if ax_i == n_vars - 1:
+                        ax.set_xlabel("Time (ms)")
 
             plt.tight_layout()
             win_suffix = (f"_window{t_start:.0f}_{t_end:.0f}ms" if t_start >= 0 else "")

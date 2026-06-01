@@ -20,12 +20,18 @@ WAV_FILES_A = [
     "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00003/00002.wav",
 ]
 
+# WAV_FILES_B = [
+#     "datasets/vox1_10person_fingerprint/wav_dev/id10511/id10511_00001/00001.wav",
+#     "datasets/vox1_10person_fingerprint/wav_dev/id10511/id10511_00001/00002.wav",
+# ]
+
 WAV_FILES_B = [
-    "datasets/vox1_10person_fingerprint/wav_dev/id10511/id10511_00001/00001.wav",
-    "datasets/vox1_10person_fingerprint/wav_dev/id10511/id10511_00001/00002.wav",
+    "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00010/00001.wav",
+    "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00010/00002.wav",
 ]
 
-EPOCHS   = 2
+EPOCHS              = 2
+SNAPSHOT_FROM_EPOCH = 1   # 0-indexed; only epochs >= this contribute snapshots
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -242,6 +248,8 @@ tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
 wmax_syn_arr     = np.array(S_ih.wmax_syn)
 wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
+_run_state = {"epoch": 0, "snapshots": []}
+
 @network_operation(dt=500*ms, when='end')
 def normalize_weights():
     for j in range(N_H):
@@ -256,6 +264,10 @@ def normalize_weights():
         wsum  = w_col.sum()
         if wsum > NORM_LIMIT_INH:
             S_hh.w_inh[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
+    if _run_state["epoch"] >= SNAPSHOT_FROM_EPOCH:
+        w_snap = np.zeros((N_IN, N_H))
+        w_snap[src_ih, tgt_ih] = np.array(S_ih.w)
+        _run_state["snapshots"].append(w_snap)
 
 net.add(normalize_weights)
 
@@ -267,17 +279,19 @@ net.store('init')
 # ============================================================
 
 def train_run(wav_files, save_subdir, label):
-    """Train one independent SNN run. Returns (w_ih, w_hh) after final epoch."""
+    """Train one independent SNN run. Returns (fingerprint, w_ih, w_hh) after final epoch."""
     save_dir     = os.path.join(SAVE_DIR, save_subdir)
     w_ih         = w_ih_base.copy()
     w_hh         = w_hh_base.copy()
     init_weights = {"in->hid": w_ih.copy(), "hid->hid": w_hh.copy()}
+    _run_state["snapshots"] = []
 
     print(f"\n{'='*60}")
     print(f"Run {label}  ({len(wav_files)} file(s), {EPOCHS} epoch(s))")
     print(f"{'='*60}")
 
     for epoch_idx in range(EPOCHS):
+        _run_state["epoch"] = epoch_idx
         print(f"\n  Epoch {epoch_idx}/{EPOCHS - 1}")
         recorder.reset_epoch()
 
@@ -345,19 +359,20 @@ def train_run(wav_files, save_subdir, label):
             init_weights=init_weights if epoch_idx == 0 else None,
         )
 
-    return w_ih, w_hh
+    fingerprint = np.mean(np.stack(_run_state["snapshots"]), axis=0)
+    return fingerprint, w_ih, w_hh
 
 # ============================================================
 # Main — run A then B, then save fingerprints
 # ============================================================
 
-w_ih_A, w_hh_A = train_run(WAV_FILES_A, "run_A", "A")
-w_ih_B, w_hh_B = train_run(WAV_FILES_B, "run_B", "B")
+fp_A, w_ih_A, w_hh_A = train_run(WAV_FILES_A, "run_A", "A")
+fp_B, w_ih_B, w_hh_B = train_run(WAV_FILES_B, "run_B", "B")
 
 fp_path = os.path.join(SAVE_DIR, "fingerprints.npz")
 np.savez(
     fp_path,
-    fingerprints = np.stack([w_ih_A, w_ih_B], axis=0).astype(np.float32),
+    fingerprints = np.stack([fp_A, fp_B], axis=0).astype(np.float32),
     labels       = np.array(["A", "B"]),
     wav_files_A  = np.array(WAV_FILES_A),
     wav_files_B  = np.array(WAV_FILES_B),
