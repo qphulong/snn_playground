@@ -1,13 +1,9 @@
 """
 heatmap.py
 ----------
-Loads fingerprints.npz and plots a pairwise similarity heatmap for each
-registered metric.  Each metric produces one PNG in vizs/.
+Loads fingerprints.npz and plots a pairwise log-absolute-distance heatmap.
 
-To add a new metric: add a function to METRICS that takes two 1-D float64
-vectors and returns a scalar similarity score.
-
-Output: vizs/heatmap_<metric_name>.png
+Output: vizs/heatmap_log_absolute_distance.png
 
 Usage:
     cd <repo_root>
@@ -38,7 +34,7 @@ if not os.path.exists(FP_PATH):
     sys.exit(f"ERROR: {FP_PATH} not found — run prepare_fingerprints.py first.")
 
 data       = np.load(FP_PATH, allow_pickle=True)
-fps        = data["fingerprints"].astype(np.float64)   # (N, 700, 700)
+fps        = data["fingerprints"].astype(np.float64)   # (N, 672, 672)
 person_ids = data["person_ids"]
 record_ids = data["record_ids"]
 parts      = data["parts"]
@@ -53,8 +49,8 @@ print(f"Loaded {N} fingerprints  shape={fps.shape}")
 mask_A = parts == "A"
 mask_B = parts == "B"
 
-vecs_A = fps[mask_A].reshape(mask_A.sum(), -1)   # (n_A, 700*700)
-vecs_B = fps[mask_B].reshape(mask_B.sum(), -1)   # (n_B, 700*700)
+vecs_A = fps[mask_A].reshape(mask_A.sum(), -1)   # (n_A, 672*672)
+vecs_B = fps[mask_B].reshape(mask_B.sum(), -1)   # (n_B, 672*672)
 
 labels_A = [f"{p}\n{r}" for p, r in zip(person_ids[mask_A], record_ids[mask_A])]
 labels_B = [f"{p}\n{r}" for p, r in zip(person_ids[mask_B], record_ids[mask_B])]
@@ -77,52 +73,12 @@ boundaries_B = _boundaries(list(person_ids[mask_B]))
 # scalar.  Add new metrics here — the rest of the script is automatic.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def cosine(x, y):
-    nx = np.linalg.norm(x)
-    ny = np.linalg.norm(y)
-    if nx == 0 or ny == 0:
-        return 0.0
-    return float(np.dot(x, y) / (nx * ny))
-
-
-def dot_product(x, y):
-    return float(np.dot(x, y))
-
-
-def weighted_cosine(x, y):
-    w = np.maximum(np.abs(x), np.abs(y)) ** 2
-    norm_x = np.sqrt((w * x * x).sum())
-    norm_y = np.sqrt((w * y * y).sum())
-    denom  = norm_x * norm_y
-    if denom == 0.0:
-        return 0.0
-    return float((w * x * y).sum() / denom)
-
-
-def squared_error(x, y):
-    return float(np.sum((x - y) ** 2))
-
-
-def absolute_error(x, y):
-    return float(np.sum(np.abs(x - y)))
-
-
-def rooted_error(x, y):
-    return float(np.sqrt(np.sum((x - y) ** 2)))
-
-
 def log_absolute_distance(x, y):
     return float(np.log(np.sum(np.abs(x - y)) + 1.0))
 
 
 # (fn, is_distance)  — is_distance=True reverses the colormap and uses dynamic range
 METRICS = {
-    "cosine":                (cosine,                False),
-    "dot_product":           (dot_product,           False),
-    "weighted_cosine":       (weighted_cosine,       False),
-    "squared_error":         (squared_error,         True),
-    "absolute_error":        (absolute_error,        True),
-    "rooted_error":          (rooted_error,          True),
     "log_absolute_distance": (log_absolute_distance, True),
 }
 
@@ -141,7 +97,8 @@ def compute_matrix(metric_fn, vecs_row, vecs_col):
 
 
 def plot_heatmap(mat, metric_name, labels_row, labels_col,
-                 boundaries_row, boundaries_col, out_path, is_distance=False):
+                 boundaries_row, boundaries_col, out_path, is_distance=False,
+                 subtitle=None):
     n_row, n_col = mat.shape
     fig_w = max(8, n_col * 0.7 + 2)
     fig_h = max(6, n_row * 0.7 + 2)
@@ -176,8 +133,10 @@ def plot_heatmap(mat, metric_name, labels_row, labels_col,
                         fontsize=max(3, font_size - 2), color="black")
 
     kind  = "Distance" if is_distance else "Similarity"
-    ax.set_title(f"{kind} ({metric_name}) — rows: Part A, cols: Part B",
-                 fontsize=13, fontweight="bold", pad=10)
+    title = f"{kind} ({metric_name}) — rows: Part A, cols: Part B"
+    if subtitle:
+        title += f"\n{subtitle}"
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=10)
     ax.set_xlabel("Part-B fingerprints", fontsize=10)
     ax.set_ylabel("Part-A fingerprints", fontsize=10)
 
@@ -199,4 +158,31 @@ for name, (fn, is_distance) in METRICS.items():
     plot_heatmap(mat, name, labels_A, labels_B,
                  boundaries_A, boundaries_B, out_path, is_distance=is_distance)
 
-print(f"\nDone — {len(METRICS)} heatmap(s) saved to vizs/")
+# ── 5×5 aggregated heatmap ────────────────────────────────────────────────────
+BLOCK = 3          # recordings per speaker
+N_BLK = mat.shape[0] // BLOCK   # = 5 speakers
+
+diag_mask = ~np.eye(BLOCK, dtype=bool)   # True for the 6 off-diagonal cells in a 3×3 block
+
+mat5 = np.zeros((N_BLK, N_BLK), dtype=np.float32)
+for bi in range(N_BLK):
+    for bj in range(N_BLK):
+        block = mat[bi*BLOCK:(bi+1)*BLOCK, bj*BLOCK:(bj+1)*BLOCK]
+        mat5[bi, bj] = block[diag_mask].mean() if bi == bj else block.mean()
+
+labels5_A = [person_ids[mask_A][bi * BLOCK] for bi in range(N_BLK)]
+labels5_B = [person_ids[mask_B][bj * BLOCK] for bj in range(N_BLK)]
+
+print(f"\nMetric: log_absolute_distance_5x5  shape={mat5.shape}  "
+      f"min={mat5.min():.4f}  max={mat5.max():.4f}  mean={mat5.mean():.4f}")
+
+diag_mean    = np.diag(mat5).mean()
+offdiag_mean = mat5[~np.eye(N_BLK, dtype=bool)].mean()
+
+out5 = os.path.join(OUT_DIR, "heatmap_log_absolute_distance_5x5.png")
+plot_heatmap(mat5,
+             "log_absolute_distance (5×5 block mean, same-recording excluded on diag)",
+             labels5_A, labels5_B, [], [], out5, is_distance=True,
+             subtitle=f"diag mean = {diag_mean:.4f}   off-diag mean = {offdiag_mean:.4f}")
+
+print(f"\nDone — {len(METRICS) + 1} heatmap(s) saved to vizs/")
