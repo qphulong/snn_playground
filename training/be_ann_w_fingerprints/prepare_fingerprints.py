@@ -18,7 +18,7 @@ where epoch_idx >= COLLECT_FROM_EPOCH_IDX (0-indexed), i.e. epochs 3 & 4
 (1-indexed).  The fingerprint is the mean of collected snapshots.
 
 Output arrays (per npz):
-  fingerprints  (N, 700, 700)  float32
+  fingerprints  (N, 672, 672)  float32
   person_ids    (N,)           str
   record_ids    (N,)           str
 
@@ -27,6 +27,7 @@ Usage:
   python3 training/be_ann_w_fingerprints/prepare_fingerprints.py
 """
 
+import argparse
 import numpy as np
 np.random.seed(42)
 import os
@@ -43,13 +44,17 @@ REPO_ROOT  = os.path.join(SCRIPT_DIR, '..', '..')
 
 sys.path.insert(0, REPO_ROOT)
 from src.utils.spike_encoding import compute_spike_input_current
-from src.utils.weights_utils import gaussian_weight_matrix
+
+_ap = argparse.ArgumentParser()
+_ap.add_argument('--warmup', action='store_true',
+                 help='Process only 1 fingerprint per split (pipeline smoke-test)')
+args = _ap.parse_args()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
 
-DATASET_ROOT  = os.path.join(REPO_ROOT, 'datasets', 'vox1_10person_fingerprint')
+DATASET_ROOT  = os.path.join(REPO_ROOT, 'datasets', 'vox1_100person_fingerprint')
 OUT_DEV_PATH  = os.path.join(SCRIPT_DIR, 'dev_fingerprints.npz')
 OUT_TEST_PATH = os.path.join(SCRIPT_DIR, 'test_fingerprints.npz')
 
@@ -57,8 +62,8 @@ OUT_TEST_PATH = os.path.join(SCRIPT_DIR, 'test_fingerprints.npz')
 # Hyperparameters
 # ─────────────────────────────────────────────────────────────────────────────
 
-N_IN = 700
-N_H  = 700
+N_IN = 672   # 96 channels × 7 neurons/channel
+N_H  = 672
 
 DT_SIM = 1 * ms
 
@@ -89,76 +94,92 @@ taupost = 20 * ms
 # -- Excitatory weight bounds --
 wmin = 0.0
 
-# -- Tonotopic plasticity bounds — excitatory (circular Gaussian) --
+# -- Excitatory synapse --
 WMAX_CENTER  = 1.0
-WMAX_MIN     = 0.3
 APRE_CENTER  =  0.002
 APOST_CENTER = -0.0024
-PLAST_SIGMA  = N_IN / 5
 
-# -- Inhibitory lateral synapse (distance-limited STDP) --
-SIGMA_INH       = N_H / 5
-W_INH_CENTER    = 0.9
-W_INH_MIN       = 0.0
-APRE_INH        = 0.002
-APOST_INH       = -0.0024
-INH_CUTOFF_MULT = 3
+# -- Inhibitory lateral synapse --
+W_INH_CENTER = 1.0
+W_INH_MIN    = 0.0
+APRE_INH     = 0.0005
+APOST_INH    = -0.0006
 
-# -- Weight initialisation --
-W_INIT_SIGMA     = N_IN / 5
-W_INIT_NOISE_STD = 0.005
-W_INIT_SUM       = 2
+# -- Tonotopic plasticity (polynomial decay: max(0, 1-(d/R)^p)) --
+R_EXC = 128
+p_EXC = 3
+R_INH = 7
+p_INH = 10000
 
 # -- Homeostatic normalisation --
-NORM_LIMIT = 2
-
-# -- WTA --
-WTA_K = 35
+NORM_LIMIT_EXC = 2
+NORM_LIMIT_INH = 0.9
 
 # -- Fingerprint collection --
 NUM_EPOCHS             = 4
 COLLECT_FROM_EPOCH_IDX = 2   # 0-indexed: collect after epoch 2 and 3 (epochs 3&4, 1-indexed)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared initial weight matrix
+# Pre-compute tonotopic plasticity matrices — excitatory
+# topo(d) = max(0, 1-(d/R)^p); hard cutoff at d=R_EXC.
 # ─────────────────────────────────────────────────────────────────────────────
 
-W_INIT = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
-                                W_INIT_SUM, wmin, WMAX_CENTER)
+_i       = np.arange(N_IN).reshape(-1, 1)
+_j       = np.arange(N_H).reshape(1, -1)
+_dist_ih = np.abs(_i - _j)
+_dist_ih = np.minimum(_dist_ih, N_IN - _dist_ih)
+_topo_exc = np.maximum(0.0, 1.0 - (_dist_ih / R_EXC) ** p_EXC)
+_mask_ih  = _dist_ih <= R_EXC
+_src_ih, _tgt_ih = np.where(_mask_ih)
+
+wmax_matrix  = WMAX_CENTER  * _topo_exc
+Apre_matrix  = APRE_CENTER  * _topo_exc
+Apost_matrix = APOST_CENTER * _topo_exc
+del _i, _j, _dist_ih, _topo_exc
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pre-compute tonotopic plasticity bound matrices — excitatory
-# ─────────────────────────────────────────────────────────────────────────────
-
-_i    = np.arange(N_IN).reshape(-1, 1)
-_j    = np.arange(N_H).reshape(1, -1)
-_dist = np.abs(_i - _j)
-_dist = np.minimum(_dist, N_IN - _dist)
-_gauss = np.exp(-(_dist ** 2) / (2 * PLAST_SIGMA ** 2))
-
-wmax_matrix  = WMAX_MIN + (WMAX_CENTER - WMAX_MIN) * _gauss
-Apre_matrix  = APRE_CENTER  * _gauss
-Apost_matrix = APOST_CENTER * _gauss
-del _i, _j, _dist, _gauss
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pre-compute tonotopic plasticity bound matrices — inhibitory
+# Pre-compute tonotopic plasticity matrices — inhibitory
+# Same formula; no self-connections (d > 0); hard cutoff at d=R_INH.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _i_hh    = np.arange(N_H).reshape(-1, 1)
 _j_hh    = np.arange(N_H).reshape(1, -1)
 _dist_hh = np.abs(_i_hh - _j_hh)
 _dist_hh = np.minimum(_dist_hh, N_H - _dist_hh)
-_gauss_hh = np.exp(-(_dist_hh ** 2) / (2 * SIGMA_INH ** 2))
-
-wmax_inh_matrix  = W_INH_CENTER * _gauss_hh
-Apre_inh_matrix  = APRE_INH     * _gauss_hh
-Apost_inh_matrix = APOST_INH    * _gauss_hh
-
-_cutoff_hh       = INH_CUTOFF_MULT * SIGMA_INH
-_mask_hh         = (_dist_hh > 0) & (_dist_hh <= _cutoff_hh)
+_topo_inh = np.maximum(0.0, 1.0 - (_dist_hh / R_INH) ** p_INH)
+_mask_hh  = (_dist_hh > 0) & (_dist_hh <= R_INH)
 _src_hh, _tgt_hh = np.where(_mask_hh)
-del _i_hh, _j_hh, _dist_hh, _gauss_hh
+
+wmax_inh_matrix  = W_INH_CENTER * _topo_inh
+Apre_inh_matrix  = APRE_INH     * _topo_inh
+Apost_inh_matrix = APOST_INH    * _topo_inh
+del _i_hh, _j_hh, _dist_hh, _topo_inh
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Initialise weight matrices
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Excitatory: formula-shaped, column-normalised to NORM_LIMIT_EXC
+w_ih_init = np.zeros((N_IN, N_H))
+w_ih_init[_src_ih, _tgt_ih] = wmax_matrix[_src_ih, _tgt_ih]
+for _j in range(N_H):
+    _col_mask = (_tgt_ih == _j)
+    _rows = _src_ih[_col_mask]
+    _wsum = w_ih_init[_rows, _j].sum()
+    if _wsum > 0:
+        w_ih_init[_rows, _j] *= NORM_LIMIT_EXC / _wsum
+
+# Inhibitory: formula-shaped, column-normalised to NORM_LIMIT_INH
+w_hh_init = np.zeros((N_H, N_H))
+w_hh_init[_src_hh, _tgt_hh] = wmax_inh_matrix[_src_hh, _tgt_hh]
+for _j in range(N_H):
+    _col_mask = (_tgt_hh == _j)
+    _rows = _src_hh[_col_mask]
+    _wsum = w_hh_init[_rows, _j].sum()
+    if _wsum > 0:
+        w_hh_init[_rows, _j] *= NORM_LIMIT_INH / _wsum
+
+init_weights = {"in->hid": w_ih_init.copy(), "hid->hid": w_hh_init.copy()}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build Brian2 network (once — reused across all runs via store/restore)
@@ -186,11 +207,10 @@ eqs_h = f"""
 dv/dt       = -v / tau_h + sigma_noise * xi                       : 1
 dvth/dt     = -(vth - {vth_rest}) / tau_vth                       : 1
 dtrace_r/dt = -trace_r / tau_r                                    : 1
-is_winner                                                         : boolean
 """
 G_h = NeuronGroup(
     N_H, eqs_h,
-    threshold="v > vth and is_winner",
+    threshold="v > vth",
     reset=f"v=0; vth=vth+{vth_jump}; trace_r=1;",
     method="euler"
 )
@@ -208,7 +228,7 @@ on_pre  = "v_post += w * (1 - trace_r_post)\napre += Apre_syn\nw = clip(w + apos
 on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
 
 S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
-S_ih.connect()
+S_ih.connect(i=_src_ih, j=_tgt_ih)
 src_ih = np.array(S_ih.i)
 tgt_ih = np.array(S_ih.j)
 
@@ -237,27 +257,13 @@ S_hh.connect(i=_src_hh, j=_tgt_hh)
 S_hh.wmax_inh_syn  = wmax_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
-S_hh.w_inh         = 0.0
+S_hh.w_inh         = w_hh_init[_src_hh, _tgt_hh]
 
-# ── WTA ───────────────────────────────────────────────────────────────────────
-@network_operation(when="before_thresholds")
-def determine_winner():
-    v   = G_h.v[:]
-    vth = G_h.vth[:]
-    crossed = v > vth
-    if np.any(crossed):
-        candidates = np.where(crossed)[0]
-        sorted_idx = candidates[np.argsort(vth[candidates])]
-        winners    = sorted_idx[:WTA_K]
-        G_h.is_winner[:]       = False
-        G_h.is_winner[winners] = True
-        G_h.v[np.setdiff1d(candidates, winners)] = 0.5
-    else:
-        G_h.is_winner[:] = False
-
-# ── Periodic L1 normalisation every 500 ms ────────────────────────────────────
-tgt_masks_ih = [np.where(tgt_ih == j)[0] for j in range(N_H)]
-wmax_syn_arr  = np.array(S_ih.wmax_syn)
+# ── Periodic L1 normalisation every 500 ms — excitatory and inhibitory ────────
+tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
+tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
+wmax_syn_arr     = np.array(S_ih.wmax_syn)
+wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
 @network_operation(dt=500*ms, when='end')
 def normalize_weights():
@@ -265,10 +271,16 @@ def normalize_weights():
         idx   = tgt_masks_ih[j]
         w_col = np.array(S_ih.w[idx])
         wsum  = w_col.sum()
-        if wsum > NORM_LIMIT and NORM_LIMIT > 0:
-            S_ih.w[idx] = np.clip(w_col * NORM_LIMIT / wsum, wmin, wmax_syn_arr[idx])
+        if wsum > NORM_LIMIT_EXC:
+            S_ih.w[idx] = np.clip(w_col * NORM_LIMIT_EXC / wsum, wmin, wmax_syn_arr[idx])
+    for j in range(N_H):
+        idx   = tgt_masks_hh[j]
+        w_col = np.array(S_hh.w_inh[idx])
+        wsum  = w_col.sum()
+        if wsum > NORM_LIMIT_INH:
+            S_hh.w_inh[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
 
-net = Network(G_in, G_h, S_ih, S_hh, determine_winner, normalize_weights)
+net = Network(G_in, G_h, S_ih, S_hh, normalize_weights)
 G_h.vth = vth_init
 net.store('init')
 
@@ -277,15 +289,21 @@ net.store('init')
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _final_normalize(w_flat):
-    """One L1 normalisation pass; guarantees every snapshot is post-norm."""
+def _final_normalize(w_flat, w_inh_flat):
+    """One L1 normalisation pass on both excitatory and inhibitory weights."""
     for j in range(N_H):
         idx   = tgt_masks_ih[j]
         w_col = w_flat[idx]
         wsum  = w_col.sum()
-        if wsum > NORM_LIMIT and NORM_LIMIT > 0:
-            w_flat[idx] = np.clip(w_col * NORM_LIMIT / wsum, wmin, wmax_syn_arr[idx])
-    return w_flat
+        if wsum > NORM_LIMIT_EXC:
+            w_flat[idx] = np.clip(w_col * NORM_LIMIT_EXC / wsum, wmin, wmax_syn_arr[idx])
+    for j in range(N_H):
+        idx   = tgt_masks_hh[j]
+        w_col = w_inh_flat[idx]
+        wsum  = w_col.sum()
+        if wsum > NORM_LIMIT_INH:
+            w_inh_flat[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
+    return w_flat, w_inh_flat
 
 
 def discover_split(split_dir):
@@ -312,18 +330,18 @@ def discover_split(split_dir):
 def train_fingerprint(wav_path, label):
     """Train fresh SNN for NUM_EPOCHS on one wav file; return averaged fingerprint.
 
-    Weights reset to W_INIT at the start. Snapshots collected from
+    Weights reset to init_weights at the start. Snapshots collected from
     COLLECT_FROM_EPOCH_IDX onward (0-indexed). Returns (N_IN, N_H) float32.
     """
     t0 = time.time()
 
-    # Fresh weights for this wav file
-    w_ih = W_INIT.copy()
-    w_hh = np.zeros((N_H, N_H))
+    w_ih = init_weights["in->hid"].copy()
+    w_hh = init_weights["hid->hid"].copy()
 
     try:
         I, T = compute_spike_input_current(
             wav_path, scale=0.8,
+            num_filters=96,
             sustained_per_band=4, onset_per_band=2, phase_per_band=1,
             sust_spread_min=0.7, sust_spread_max=1.3,
         )
@@ -347,16 +365,18 @@ def train_fingerprint(wav_path, label):
 
         net.run(T * DT_SIM)
 
-        w_raw = np.array(S_ih.w)
-        w_raw = _final_normalize(w_raw)
-        S_ih.w = w_raw
+        w_raw     = np.array(S_ih.w)
+        w_inh_raw = np.array(S_hh.w_inh)
+        w_raw, w_inh_raw = _final_normalize(w_raw, w_inh_raw)
+        S_ih.w    = w_raw
+        S_hh.w_inh = w_inh_raw
 
         w_ih_new = np.zeros((N_IN, N_H))
         w_ih_new[src_ih, tgt_ih] = w_raw
         w_ih = w_ih_new
 
         w_hh_new = np.zeros((N_H, N_H))
-        w_hh_new[_src_hh, _tgt_hh] = np.array(S_hh.w_inh)
+        w_hh_new[_src_hh, _tgt_hh] = w_inh_raw
         w_hh = w_hh_new
 
         if epoch_idx >= COLLECT_FROM_EPOCH_IDX:
@@ -377,6 +397,8 @@ t_start = time.time()
 for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PATH)):
     split_dir = os.path.join(DATASET_ROOT, split_name)
     entries   = discover_split(split_dir)
+    if args.warmup:
+        entries = entries[:1]
     n         = len(entries)
     persons   = sorted(set(e['person_id'] for e in entries))
     print(f"\n{'='*60}")
