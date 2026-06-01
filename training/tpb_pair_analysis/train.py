@@ -25,9 +25,14 @@ WAV_FILES_A = [
 #     "datasets/vox1_10person_fingerprint/wav_dev/id10511/id10511_00001/00002.wav",
 # ]
 
+# WAV_FILES_B = [
+#     "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00010/00001.wav",
+#     "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00010/00002.wav",
+# ]
+
 WAV_FILES_B = [
-    "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00010/00001.wav",
-    "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00010/00002.wav",
+    "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00003/00003.wav",
+    "datasets/vox1_10person_fingerprint/wav_dev/id11232/id11232_00003/00004.wav",
 ]
 
 EPOCHS              = 2
