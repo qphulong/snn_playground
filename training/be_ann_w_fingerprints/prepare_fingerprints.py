@@ -28,6 +28,7 @@ Usage:
 """
 
 import argparse
+import tempfile
 import numpy as np
 np.random.seed(42)
 import os
@@ -399,33 +400,84 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     entries   = discover_split(split_dir)
     if args.warmup:
         entries = entries[:1]
-    n         = len(entries)
-    persons   = sorted(set(e['person_id'] for e in entries))
+    n       = len(entries)
+    persons = sorted(set(e['person_id'] for e in entries))
     print(f"\n{'='*60}")
     print(f"Split: {split_name}  |  {n} wav file(s) across {len(persons)} person(s)")
     print(f"{'='*60}")
 
-    fingerprints = []
-    person_ids   = []
-    record_ids   = []
+    mmap_path = out_path + '.mmap'
+    meta_path = out_path + '.meta.npz'
 
-    for idx, e in enumerate(entries):
-        print(f"[{idx+1:03d}/{n:03d}] {e['label']}")
+    # ── Resume: load checkpoint if available ─────────────────────────────
+    processed_labels = set()
+    person_ids       = []
+    record_ids       = []
+    count            = 0
+
+    if os.path.exists(mmap_path) and os.path.exists(meta_path):
+        _meta = np.load(meta_path, allow_pickle=True)
+        if int(_meta['n']) == n:
+            count            = int(_meta['count'])
+            person_ids       = _meta['person_ids'].tolist()
+            record_ids       = _meta['record_ids'].tolist()
+            processed_labels = set(_meta['labels'].tolist())
+            fp_mmap = np.memmap(mmap_path, dtype='float32', mode='r+',
+                                shape=(n, N_IN, N_H))
+            print(f"  Resumed  : {count}/{n} done, {n - len(processed_labels)} remaining")
+        else:
+            print(f"  Dataset size changed ({int(_meta['n'])} → {n}), starting fresh")
+            fp_mmap = np.memmap(mmap_path, dtype='float32', mode='w+',
+                                shape=(n, N_IN, N_H))
+    else:
+        fp_mmap = np.memmap(mmap_path, dtype='float32', mode='w+',
+                            shape=(n, N_IN, N_H))
+        print(f"  Starting fresh: {n} fingerprints to process")
+
+    remaining = [e for e in entries if e['label'] not in processed_labels]
+
+    def _checkpoint():
+        fp_mmap.flush()
+        np.savez(meta_path,
+                 n          = np.array(n),
+                 count      = np.array(count),
+                 person_ids = np.array(person_ids),
+                 record_ids = np.array(record_ids),
+                 labels     = np.array(sorted(processed_labels)))
+
+    new_since_save = 0
+    for e in remaining:
+        print(f"[{count+1:03d}/{n:03d}] {e['label']}")
         fp = train_fingerprint(e['wav_path'], e['label'])
         if fp is None:
             continue
-        fingerprints.append(fp)
+        fp_mmap[count] = fp
+        count += 1
         person_ids.append(e['person_id'])
         record_ids.append(e['record_id'])
+        processed_labels.add(e['label'])
+        new_since_save += 1
 
-    fingerprints_arr = np.stack(fingerprints, axis=0)
+        if new_since_save >= 10:
+            _checkpoint()
+            new_since_save = 0
+            print(f"  [checkpoint: {count}/{n}]")
 
+    # Final checkpoint then convert memmap → npz
+    _checkpoint()
+
+    fingerprints_arr = fp_mmap[:count]
     np.savez(
         out_path,
         fingerprints = fingerprints_arr,
         person_ids   = np.array(person_ids),
         record_ids   = np.array(record_ids),
     )
+
+    del fp_mmap
+    os.unlink(mmap_path)
+    if os.path.exists(meta_path):
+        os.unlink(meta_path)
 
     print(f"\nSaved → {os.path.relpath(out_path)}")
     print(f"  fingerprints : {fingerprints_arr.shape}  "
