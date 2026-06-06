@@ -23,36 +23,19 @@ record:
     input:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: []          # list of neuron indices, or [idx, [t0_ms, t1_ms]]
-      membrane_potential_variables: ["v"]
 
-    hidden:
-      spike_raster:       true
-      mean_firing_rate:   true
-      membrane_potential:
-      membrane_potential_variables: ["v", "vth"]
-
-    # ── Template for a new group ────────────────────────────────────────────
-    # output:
+    # hidden:
     #   spike_raster:       true
     #   mean_firing_rate:   true
-    #   membrane_potential: []
-    #   membrane_potential_variables: ["v"]
+    #   membrane_potential:
+    #   membrane_potential_variables: ["v", "vth"]
 
   # ── Synapse groups ──────────────────────────────────────────────────────────
 
-  synapses:
-
-    in->hid:
-      weights_evolution:
-      final_weights_per_sample: true
-
-    # ── Template for a new synapse group ───────────────────────────────────
-    # hid->out:
-    #   weights_evolution:
-    #     - [0, 0]
-    #     - [50, 10]
-    #   final_weights_per_sample: false
+  # synapses:
+  #   in->hid:
+  #     weights_evolution:
+  #     final_weights_per_sample: true
 
 
 # ── Visualization configuration ───────────────────────────────────────────────
@@ -72,37 +55,27 @@ visualize:
     input:
       spike_raster:       true
       mean_firing_rate:   true
-      membrane_potential: []
-      membrane_potential_variables: ["v"]
 
-    hidden:
-      spike_raster:       true
-      mean_firing_rate:   true
-      membrane_potential:
-      membrane_potential_variables: ["v", "vth"]
-
-    # output:
+    # hidden:
     #   spike_raster:       true
     #   mean_firing_rate:   true
-    #   membrane_potential: []
-    #   membrane_potential_variables: ["v"]
+    #   membrane_potential:
+    #   membrane_potential_variables: ["v", "vth"]
 
   # ── Synapse groups ──────────────────────────────────────────────────────────
 
-  synapses:
-
-    in->hid:
-      weights_evolution:
-      final_weights_per_sample: true
-
-    # hid->out:
-    #   weights_evolution:
-    #     - [0, 0]
-    #     - [50, 10]
-    #   final_weights_per_sample: false
+  # synapses:
+  #   in->hid:
+  #     weights_evolution:
+  #       - [0,   0]
+  #       - [100, 100]
+  #       - [350, 350]
+  #     final_weights_per_sample: true
 
   # ── Per-neuron incoming weight plots ────────────────────────────────────────
-  # Keyed by synapse name; lists post-synaptic neuron indices to plot.
 
-  weights_per_neuron:
-    in->hid:
+  # weights_per_neuron:
+  #   in->hid:
+  #     - 0
+  #     - 100
+  #     - 350
