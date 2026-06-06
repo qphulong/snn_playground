@@ -17,10 +17,23 @@ Training: NUM_EPOCHS=4 per wav file.  Snapshots collected after each epoch
 where epoch_idx >= COLLECT_FROM_EPOCH_IDX (0-indexed), i.e. epochs 3 & 4
 (1-indexed).  The fingerprint is the mean of collected snapshots.
 
+ADDED — rate vectors (recorded in the SAME pass, paired to each fingerprint):
+  Two SpikeMonitor counters tally per-neuron spikes during the collection
+  epochs (the same epochs the fingerprint averages).  These give two baseline
+  representations for the three-way linear-probe comparison:
+    input_rates   per-input-neuron firing rate  (Hz)  shape (N_IN,)  = (672,)
+    hidden_rates  per-hidden-neuron firing rate (Hz)  shape (N_H,)   = (672,)
+  Because they are captured in the same run that produces the fingerprint, they
+  are paired to the exact same network instantiation (same noise draw) — no
+  separate re-run, and the trained inhibition is the real one, not a re-init.
+
 Output arrays (per npz):
   fingerprints  (N, 672, 672)  float32
+  input_rates   (N, 672)       float32   (Hz)
+  hidden_rates  (N, 672)       float32   (Hz)
   person_ids    (N,)           str
   record_ids    (N,)           str
+  labels        (N,)           str       person/record/file (for robust pairing)
 
 Usage:
   cd <repo_root>
@@ -37,7 +50,7 @@ import time
 
 from brian2 import (
     NeuronGroup, Synapses, TimedArray, Network, network_operation,
-    defaultclock, ms, second,
+    SpikeMonitor, defaultclock, ms, second,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -260,6 +273,12 @@ S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
 S_hh.w_inh         = w_hh_init[_src_hh, _tgt_hh]
 
+# ── ADDED: spike counters (record=False → per-neuron counts only, cheap) ───────
+# Tally input/hidden spikes so we can derive the two rate-vector baselines in the
+# same pass that builds the fingerprint.
+mon_in = SpikeMonitor(G_in, record=False)
+mon_h  = SpikeMonitor(G_h,  record=False)
+
 # ── Periodic L1 normalisation every 500 ms — excitatory and inhibitory ────────
 tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
 tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
@@ -281,7 +300,8 @@ def normalize_weights():
         if wsum > NORM_LIMIT_INH:
             S_hh.w_inh[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
 
-net = Network(G_in, G_h, S_ih, S_hh, normalize_weights)
+# ADDED: mon_in, mon_h included so they are part of the stored/restored state.
+net = Network(G_in, G_h, S_ih, S_hh, mon_in, mon_h, normalize_weights)
 G_h.vth = vth_init
 net.store('init')
 
@@ -329,10 +349,15 @@ def discover_split(split_dir):
 
 
 def train_fingerprint(wav_path, label):
-    """Train fresh SNN for NUM_EPOCHS on one wav file; return averaged fingerprint.
+    """Train fresh SNN for NUM_EPOCHS on one wav file; return averaged fingerprint
+    AND the paired input/hidden rate vectors.
 
     Weights reset to init_weights at the start. Snapshots collected from
-    COLLECT_FROM_EPOCH_IDX onward (0-indexed). Returns (N_IN, N_H) float32.
+    COLLECT_FROM_EPOCH_IDX onward (0-indexed). Spike counts are tallied over the
+    same collection epochs and converted to per-neuron firing rates (Hz).
+
+    Returns (fingerprint (N_IN,N_H) f32, input_rate (N_IN,) f32, hidden_rate (N_H,) f32)
+    or None if the wav could not be encoded.
     """
     t0 = time.time()
 
@@ -350,7 +375,11 @@ def train_fingerprint(wav_path, label):
         print(f"  [skip {label}: {e}]")
         return None
 
+    duration_s = float(T) * float(DT_SIM / second)   # ADDED: seconds simulated / epoch
+
     collected = []
+    in_counts = []   # ADDED: per-epoch input spike counts (collection epochs)
+    h_counts  = []   # ADDED: per-epoch hidden spike counts (collection epochs)
 
     for epoch_idx in range(NUM_EPOCHS):
         net.restore('init')
@@ -364,7 +393,15 @@ def train_fingerprint(wav_path, label):
         S_hh.apre_inh  = 0
         S_hh.apost_inh = 0
 
+        # ADDED: delta-count spikes across this epoch's run. Reading before/after
+        # is robust whether or not restore('init') zeroes the monitors.
+        c_in_before = np.array(mon_in.count)
+        c_h_before  = np.array(mon_h.count)
+
         net.run(T * DT_SIM)
+
+        c_in_after = np.array(mon_in.count)
+        c_h_after  = np.array(mon_h.count)
 
         w_raw     = np.array(S_ih.w)
         w_inh_raw = np.array(S_hh.w_inh)
@@ -382,11 +419,23 @@ def train_fingerprint(wav_path, label):
 
         if epoch_idx >= COLLECT_FROM_EPOCH_IDX:
             collected.append(w_ih.copy())
+            in_counts.append(c_in_after - c_in_before)   # ADDED
+            h_counts.append(c_h_after - c_h_before)       # ADDED
 
     fingerprint = (np.mean(collected, axis=0).astype(np.float32)
                    if collected else w_ih.astype(np.float32))
-    print(f"  {label}  →  {len(collected)} snapshot(s)  ({time.time()-t0:.1f}s)")
-    return fingerprint
+
+    # ADDED: mean spike count over collection epochs → firing rate in Hz
+    if in_counts:
+        input_rate  = (np.mean(in_counts, axis=0) / duration_s).astype(np.float32)
+        hidden_rate = (np.mean(h_counts,  axis=0) / duration_s).astype(np.float32)
+    else:
+        input_rate  = ((c_in_after - c_in_before) / duration_s).astype(np.float32)
+        hidden_rate = ((c_h_after  - c_h_before)  / duration_s).astype(np.float32)
+
+    print(f"  {label}  →  {len(collected)} snapshot(s) | "
+          f"in {input_rate.mean():5.1f}Hz hid {hidden_rate.mean():5.1f}Hz  ({time.time()-t0:.1f}s)")
+    return fingerprint, input_rate, hidden_rate
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -413,20 +462,29 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     processed_labels = set()
     person_ids       = []
     record_ids       = []
+    row_labels       = []          # ADDED: row-aligned labels
+    input_rates      = []          # ADDED
+    hidden_rates     = []          # ADDED
     count            = 0
 
     if os.path.exists(mmap_path) and os.path.exists(meta_path):
         _meta = np.load(meta_path, allow_pickle=True)
-        if int(_meta['n']) == n:
+        # ADDED: require the rate arrays to be present, else resume would desync
+        _has_rates = ('input_rates' in _meta.files and 'hidden_rates' in _meta.files
+                      and 'row_labels' in _meta.files)
+        if int(_meta['n']) == n and _has_rates:
             count            = int(_meta['count'])
             person_ids       = _meta['person_ids'].tolist()
             record_ids       = _meta['record_ids'].tolist()
-            processed_labels = set(_meta['labels'].tolist())
+            row_labels       = _meta['row_labels'].tolist()
+            input_rates      = list(_meta['input_rates'])
+            hidden_rates     = list(_meta['hidden_rates'])
+            processed_labels = set(row_labels)
             fp_mmap = np.memmap(mmap_path, dtype='float32', mode='r+',
                                 shape=(n, N_IN, N_H))
             print(f"  Resumed  : {count}/{n} done, {n - len(processed_labels)} remaining")
         else:
-            print(f"  Dataset size changed ({int(_meta['n'])} → {n}), starting fresh")
+            print(f"  Checkpoint incompatible (size/format), starting fresh")
             fp_mmap = np.memmap(mmap_path, dtype='float32', mode='w+',
                                 shape=(n, N_IN, N_H))
     else:
@@ -439,22 +497,28 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     def _checkpoint():
         fp_mmap.flush()
         np.savez(meta_path,
-                 n          = np.array(n),
-                 count      = np.array(count),
-                 person_ids = np.array(person_ids),
-                 record_ids = np.array(record_ids),
-                 labels     = np.array(sorted(processed_labels)))
+                 n            = np.array(n),
+                 count        = np.array(count),
+                 person_ids   = np.array(person_ids),
+                 record_ids   = np.array(record_ids),
+                 row_labels   = np.array(row_labels),
+                 input_rates  = np.array(input_rates,  dtype=np.float32),
+                 hidden_rates = np.array(hidden_rates, dtype=np.float32))
 
     new_since_save = 0
     for e in remaining:
         print(f"[{count+1:03d}/{n:03d}] {e['label']}")
-        fp = train_fingerprint(e['wav_path'], e['label'])
-        if fp is None:
+        out = train_fingerprint(e['wav_path'], e['label'])
+        if out is None:
             continue
+        fp, ir, hr = out                       # ADDED: unpack rates
         fp_mmap[count] = fp
         count += 1
         person_ids.append(e['person_id'])
         record_ids.append(e['record_id'])
+        row_labels.append(e['label'])          # ADDED
+        input_rates.append(ir)                 # ADDED
+        hidden_rates.append(hr)                # ADDED
         processed_labels.add(e['label'])
         new_since_save += 1
 
@@ -470,8 +534,11 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     np.savez(
         out_path,
         fingerprints = fingerprints_arr,
+        input_rates  = np.array(input_rates,  dtype=np.float32),   # ADDED
+        hidden_rates = np.array(hidden_rates, dtype=np.float32),   # ADDED
         person_ids   = np.array(person_ids),
         record_ids   = np.array(record_ids),
+        labels       = np.array(row_labels),                       # ADDED
     )
 
     del fp_mmap
@@ -482,6 +549,10 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     print(f"\nSaved → {os.path.relpath(out_path)}")
     print(f"  fingerprints : {fingerprints_arr.shape}  "
           f"range [{fingerprints_arr.min():.4f}, {fingerprints_arr.max():.4f}]")
+    print(f"  input_rates  : {np.array(input_rates).shape}  "
+          f"mean {np.mean(input_rates):.2f} Hz")
+    print(f"  hidden_rates : {np.array(hidden_rates).shape}  "
+          f"mean {np.mean(hidden_rates):.2f} Hz")
     print(f"  persons      : {persons}")
 
 print(f"\nTotal time: {time.time() - t_start:.1f}s")
