@@ -203,13 +203,14 @@ for epoch_idx in range(EPOCHS):
         try:
             I, T = compute_spike_input_current(
                 audio_path,
-                scale=0.8,
+                scale=0.09,
                 num_filters=96,
                 sustained_per_band=4,
                 onset_per_band=2,
                 phase_per_band=1,
                 sust_spread_min=0.7,
                 sust_spread_max=1.3,
+                normalization="perchannel",
             )
         except Exception as e:
             print(f"    Error encoding audio: {e}")
