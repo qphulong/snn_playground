@@ -7,7 +7,6 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
-from src.utils.calibration import calibrate_current_to_rate
 from src.recorder import Recorder
 
 import time
@@ -26,7 +25,7 @@ wav_files = [
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 4
+EPOCHS   = 3
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -45,15 +44,11 @@ ENC_ONSET            = 2     # onset neurons / band
 ENC_PHASE            = 1     # phase neurons / band
 ENC_SUST_SPREAD_MIN  = 0.7
 ENC_SUST_SPREAD_MAX  = 1.3
-ENC_SUST_GAIN        = 1.0
-ENC_ONSET_GAIN       = 2.0
-ENC_PHASE_GAIN       = 1.0
-ENC_SCALE_SEED       = 1.0   # seed for auto-calibration (final level set by target rate)
-ENC_CHANNEL_FLOOR    = 0.95   # across-channel "activity distance": 1.0 = equal, <1 = louder channels dominate
-
-# Auto-calibration: hold input firing RATE constant across files (Hz / neuron).
-# This is the main STDP-health knob — tune it.
-TARGET_INPUT_RATE_HZ = 10.0
+ENC_SUST_GAIN        = 0.4
+ENC_ONSET_GAIN       = 0.36
+ENC_PHASE_GAIN       = 0.5
+ENC_SCALE            = 0.1    # global input-current gain — the main activity / STDP-health knob, tune it
+ENC_CHANNEL_FLOOR    = 1.0   # across-channel "activity distance": 1.0 = equal, <1 = louder channels dominate
 
 # -- Input layer (adaptive LIF) --
 tau_m       = 40 * ms
@@ -211,25 +206,19 @@ net.store('init')
 
 
 # ============================================================
-# Pre-encode + auto-calibrate inputs  (once — inputs are identical every epoch)
+# Pre-encode inputs  (once — inputs are identical every epoch)
 # ============================================================
-# Encoding/calibration are deterministic per file and weight-independent, so we
-# do them once up front and cache the calibrated current. Calibration scales each
-# file so the input layer fires at ~TARGET_INPUT_RATE_HZ regardless of the file or
-# its length — the property that makes a tuned STDP setup transfer across Vox1/Vox2.
+# Encoding is deterministic per file and weight-independent, so we do it once up
+# front and cache the current. Cross-file activity consistency comes from the
+# "contrast" per-channel normalization; ENC_SCALE sets the absolute level.
 
-INPUT_NEURON_PARAMS = {
-    "tau_m": tau_m, "tau_a": tau_a, "tau_current": tau_current,
-    "beta": beta, "v_th_in": v_th_in, "refractory": 2 * ms,
-}
-
-samples = []  # (audio_path, I_calibrated, T, duration_s)
-print("\nPre-encoding + calibrating inputs ...")
+samples = []  # (audio_path, I, T, duration_s)
+print("\nPre-encoding inputs ...")
 for sample_idx, audio_path in enumerate(wav_files):
     try:
         I, T = compute_spike_input_current(
             audio_path,
-            scale=ENC_SCALE_SEED,
+            scale=ENC_SCALE,
             num_filters=ENC_NUM_FILTERS,
             sustained_per_band=ENC_SUSTAINED,
             onset_per_band=ENC_ONSET,
@@ -246,13 +235,8 @@ for sample_idx, audio_path in enumerate(wav_files):
         print(f"  [sample {sample_idx}] error encoding {audio_path}: {e}")
         continue
 
-    I, gain, rate = calibrate_current_to_rate(
-        I, dt=DT_SIM, target_rate_hz=TARGET_INPUT_RATE_HZ,
-        neuron_params=INPUT_NEURON_PARAMS,
-    )
     duration_s = float(T) * float(DT_SIM)
-    print(f"  [sample {sample_idx}] {os.path.relpath(audio_path)} "
-          f"T={T} gain={gain:.4g} -> {rate:.2f} Hz")
+    print(f"  [sample {sample_idx}] {os.path.relpath(audio_path)} T={T}")
     samples.append((audio_path, I, T, duration_s))
 
 

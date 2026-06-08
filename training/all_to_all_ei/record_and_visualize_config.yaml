@@ -24,18 +24,17 @@ record:
       spike_raster:       true
       mean_firing_rate:   true
 
-    # hidden:
-    #   spike_raster:       true
-    #   mean_firing_rate:   true
-    #   membrane_potential:
-    #   membrane_potential_variables: ["v", "vth"]
+    hidden:
+      spike_raster:       true
+      mean_firing_rate:   true
 
   # ── Synapse groups ──────────────────────────────────────────────────────────
 
-  # synapses:
-  #   in->hid:
-  #     weights_evolution:
-  #     final_weights_per_sample: true
+  synapses:
+    in->hid:
+      final_weights_per_sample: true
+    hid->hid:
+      final_weights_per_sample: true
 
 
 # ── Visualization configuration ───────────────────────────────────────────────
@@ -56,26 +55,44 @@ visualize:
       spike_raster:       true
       mean_firing_rate:   true
 
-    # hidden:
-    #   spike_raster:       true
-    #   mean_firing_rate:   true
-    #   membrane_potential:
-    #   membrane_potential_variables: ["v", "vth"]
+    hidden:
+      spike_raster:       true
+      mean_firing_rate:   true
+
+  # ── Input neuron type layout (for colouring input plots by spike type) ───────
+  # Must match the encoding in train.py (ENC_SUSTAINED / ENC_ONSET / ENC_PHASE).
+  # Input raster / spike-count / mean-firing-rate plots for `group` colour each
+  # neuron by type: sustained / onset / phase.
+  input_neuron_layout:
+    group:               input
+    sustained_per_band:  4
+    onset_per_band:      2
+    phase_per_band:      1
 
   # ── Synapse groups ──────────────────────────────────────────────────────────
 
-  # synapses:
-  #   in->hid:
-  #     weights_evolution:
-  #       - [0,   0]
-  #       - [100, 100]
-  #       - [350, 350]
-  #     final_weights_per_sample: true
+  synapses:
+    in->hid:
+      final_weights_per_sample: true
+    hid->hid:
+      final_weights_per_sample: true
 
   # ── Per-neuron incoming weight plots ────────────────────────────────────────
 
-  # weights_per_neuron:
-  #   in->hid:
-  #     - 0
-  #     - 100
-  #     - 350
+  weights_per_neuron:
+    in->hid:
+      - 0
+      - 100
+      - 200
+      - 300
+      - 400
+      - 500
+      - 600
+    hid->hid:
+      - 0
+      - 100
+      - 200
+      - 300
+      - 400
+      - 500
+      - 600
