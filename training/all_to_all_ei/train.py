@@ -18,14 +18,14 @@ start = time.time()
 # TODO: set the path
 wav_files = [
     "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00002.wav",
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00006/00004.wav",
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00009/00005.wav",
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00017/00003.wav"
-
+    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00001.wav"
+    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00006/00004.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00009/00005.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00017/00003.wav"
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 3
+EPOCHS   = 6
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -48,7 +48,16 @@ ENC_SUST_GAIN        = 0.4
 ENC_ONSET_GAIN       = 0.36
 ENC_PHASE_GAIN       = 0.5
 ENC_SCALE            = 0.1    # global input-current gain — the main activity / STDP-health knob, tune it
-ENC_CHANNEL_FLOOR    = 1.0   # across-channel "activity distance": 1.0 = equal, <1 = louder channels dominate
+ENC_CHANNEL_FLOOR    = 0.9   # across-channel "activity distance": 1.0 = equal, <1 = louder channels dominate
+
+# -- Burst de-saturation (temporal dynamic-range compression) --
+# AGC compresses each channel's slow loudness envelope so loud bursts stay in the
+# neuron's graded firing regime instead of saturating; transients are preserved.
+# Set ENC_AGC_TAU_MS=None to disable.  After changing these, re-check ENC_SCALE.
+ENC_AGC_TAU_MS       = 60.0   # AGC envelope time constant (ms); smaller tracks bursts faster
+ENC_AGC_FLOOR        = 0.1    # AGC gain cap in near-silence (~1/floor)
+ENC_ALPHA            = 1.0    # log-compression strength (higher = more compression)
+ENC_GAMMA            = 0.475    # power-law on E/dE/phase (gamma<1 tames bursts; 1.0 = off)
 
 # -- Input layer (adaptive LIF) --
 tau_m       = 40 * ms
@@ -71,8 +80,8 @@ EXC_SUM_LIMIT = 2.0
 # -- STDP: excitatory (in→hid) --
 taupre_exc      = 20  * ms
 taupost_exc     = 20  * ms
-Apre_delta_exc  =  0.004
-Apost_delta_exc = -0.0048
+Apre_delta_exc  =  0.001
+Apost_delta_exc = -0.0012
 wmax_exc        = 1.0
 wmin_exc        = 0.0
 
@@ -230,6 +239,10 @@ for sample_idx, audio_path in enumerate(wav_files):
             phase_gain=ENC_PHASE_GAIN,
             normalization="contrast",
             channel_floor=ENC_CHANNEL_FLOOR,
+            alpha=ENC_ALPHA,
+            gamma=ENC_GAMMA,
+            agc_tau_ms=ENC_AGC_TAU_MS,
+            agc_floor_frac=ENC_AGC_FLOOR,
         )
     except Exception as e:
         print(f"  [sample {sample_idx}] error encoding {audio_path}: {e}")
