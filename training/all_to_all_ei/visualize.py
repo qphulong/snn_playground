@@ -26,7 +26,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import matplotlib.patches as mpatches
 import yaml
 
 # ── resolve paths ─────────────────────────────────────────────────────────────
@@ -42,20 +41,18 @@ weights_per_neuron   = {}   # {synapse_name: [neuron_ids]}
 track_weight_delta   = False
 group_cfg            = {}
 synapse_cfg          = {}
-input_neuron_layout  = {}   # per-channel input neuron type layout (for type-coloured plots)
 
 if os.path.exists(cfg_path):
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
     # Support both the new split format and the legacy flat format.
     viz_cfg = cfg.get("visualize", cfg)
-    visualize_samples   = viz_cfg.get("visualize_samples",  None)
-    visualize_epoch     = viz_cfg.get("visualize_epoch",    [])
-    weights_per_neuron  = viz_cfg.get("weights_per_neuron", {}) or {}
-    track_weight_delta  = viz_cfg.get("track_weight_delta", False)
-    group_cfg           = viz_cfg.get("groups",   {}) or {}
-    synapse_cfg         = viz_cfg.get("synapses", {}) or {}
-    input_neuron_layout = viz_cfg.get("input_neuron_layout", {}) or {}
+    visualize_samples  = viz_cfg.get("visualize_samples",  None)
+    visualize_epoch    = viz_cfg.get("visualize_epoch",    [])
+    weights_per_neuron = viz_cfg.get("weights_per_neuron", {}) or {}
+    track_weight_delta = viz_cfg.get("track_weight_delta", False)
+    group_cfg          = viz_cfg.get("groups",   {}) or {}
+    synapse_cfg        = viz_cfg.get("synapses", {}) or {}
 
 # ── find epoch files ──────────────────────────────────────────────────────────
 
@@ -158,13 +155,10 @@ def _plot_weight_matrix(W, title, filename, epoch_dir=None):
     save(fig, filename, epoch_dir=epoch_dir)
 
 
-def _plot_firing_rate(rates, title, filename, color="darkorange", epoch_dir=None,
-                      legend_handles=None):
+def _plot_firing_rate(rates, title, filename, color="darkorange", epoch_dir=None):
     n = len(rates)
     fig, ax = plt.subplots(figsize=(12, 4))
     ax.bar(np.arange(n), rates, width=1.0, color=color, linewidth=0)
-    if legend_handles:
-        ax.legend(handles=legend_handles, loc="upper right", fontsize=8)
     ax.set_title(title, fontsize=13, fontweight="bold")
     ax.set_xlabel("Neuron index")
     ax.set_ylabel("Mean rate (Hz)")
@@ -187,18 +181,12 @@ def _plot_spike_raster(data, keys, name, epoch_idx, epoch_dir, color):
     n_total   = int(_get(data, name, "raster_n_samples"))
     n_neurons = int(_get(data, name, "raster_n_neurons"))
 
-    type_colors, handles = _input_type_colors(name, n_neurons)
-
     for s in _sample_indices(n_total):
         sp_i = raster_i[s]
         sp_t = raster_t[s]
         fig, ax = plt.subplots(figsize=(12, 5))
         if len(sp_t) > 0:
-            c = (list(type_colors[sp_i.astype(np.int32)])
-                 if type_colors is not None else color)
-            ax.scatter(sp_t, sp_i, s=0.5, c=c, linewidths=0, rasterized=True)
-        if handles:
-            ax.legend(handles=handles, loc="upper right", fontsize=8, markerscale=2)
+            ax.scatter(sp_t, sp_i, s=0.5, c=color, linewidths=0, rasterized=True)
         ax.set_title(
             f"Spike Raster — {name}  |  Epoch {epoch_idx}, Sample {s}  ({len(sp_t):,} spikes)",
             fontsize=12, fontweight="bold"
@@ -220,17 +208,12 @@ def _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color):
     n_total   = int(_get(data, name, "raster_n_samples"))
     n_neurons = int(_get(data, name, "raster_n_neurons"))
 
-    type_colors, handles = _input_type_colors(name, n_neurons)
-    bar_color = type_colors if type_colors is not None else color
-
     for s in _sample_indices(n_total):
         sp_i = raster_i[s]
         counts = (np.bincount(sp_i.astype(np.int32), minlength=n_neurons)
                   if len(sp_i) > 0 else np.zeros(n_neurons, dtype=np.int32))
         fig, ax = plt.subplots(figsize=(12, 4))
-        ax.bar(np.arange(n_neurons), counts, width=1.0, color=bar_color, linewidth=0)
-        if handles:
-            ax.legend(handles=handles, loc="upper right", fontsize=8)
+        ax.bar(np.arange(n_neurons), counts, width=1.0, color=color, linewidth=0)
         ax.set_title(
             f"Spike Count — {name}  |  Epoch {epoch_idx}, Sample {s}",
             fontsize=13, fontweight="bold"
@@ -247,19 +230,13 @@ def _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color):
 def _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color):
     pfx = _pfx(name)
 
-    def _colors_for(n_neurons):
-        type_colors, handles = _input_type_colors(name, n_neurons)
-        return (type_colors if type_colors is not None else color), handles
-
     # Whole-dataset aggregate
     if _has(keys, name, "mfr"):
-        mfr = _get(data, name, "mfr")
-        bar_color, handles = _colors_for(len(mfr))
         _plot_firing_rate(
-            mfr,
+            _get(data, name, "mfr"),
             f"Mean Firing Rate — {name}  |  Epoch {epoch_idx}, all samples",
             f"mean_firing_rate_{pfx}_all.png",
-            color=bar_color, epoch_dir=epoch_dir, legend_handles=handles
+            color=color, epoch_dir=epoch_dir
         )
 
     # Per-sample
@@ -273,12 +250,11 @@ def _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color):
             dur   = float(sample_durs[s])
             rates = (sample_counts[s] / dur if dur > 0
                      else np.zeros_like(sample_counts[s], dtype=np.float32))
-            bar_color, handles = _colors_for(len(rates))
             _plot_firing_rate(
                 rates.astype(np.float32),
                 f"Mean Firing Rate — {name}  |  Epoch {epoch_idx}, Sample {s}",
                 f"mean_firing_rate_{pfx}_sample{s:03d}.png",
-                color=bar_color, epoch_dir=epoch_dir, legend_handles=handles
+                color=color, epoch_dir=epoch_dir
             )
 
 
@@ -533,55 +509,6 @@ GROUP_COLORS = {
 
 def _group_color(name):
     return GROUP_COLORS.get(name, "mediumpurple")
-
-
-# ── Colour input neurons by spike type (sustained / onset / phase) ────────────
-# Input neurons are laid out per frequency channel as
-#   [sustained × S, onset × O, phase × P]  (see compute_spike_input_current),
-# so neuron i's type is determined by (i % per_band).  The layout is read from
-# record_and_visualize_config.yaml -> visualize.input_neuron_layout and must
-# match the encoding used in train.py.
-
-TYPE_COLORS = {
-    "sustained": "steelblue",
-    "onset":     "crimson",
-    "phase":     "darkorange",
-}
-
-
-def _input_type_colors(name, n_neurons):
-    """Per-neuron colour array + legend handles for type-coloured input plots.
-
-    Returns (colors, handles) where ``colors`` is an (n_neurons,) array of colour
-    strings, or (None, None) if ``name`` is not the configured input group or no
-    layout is available (callers then fall back to the single group colour).
-    """
-    if not input_neuron_layout:
-        return None, None
-    if name != input_neuron_layout.get("group", "input"):
-        return None, None
-
-    s = int(input_neuron_layout.get("sustained_per_band", 0))
-    o = int(input_neuron_layout.get("onset_per_band",     0))
-    p = int(input_neuron_layout.get("phase_per_band",     0))
-    per_band = s + o + p
-    if per_band <= 0:
-        return None, None
-
-    pos    = np.arange(n_neurons) % per_band
-    colors = np.empty(n_neurons, dtype=object)
-    colors[pos < s]                       = TYPE_COLORS["sustained"]
-    colors[(pos >= s) & (pos < s + o)]    = TYPE_COLORS["onset"]
-    colors[pos >= s + o]                  = TYPE_COLORS["phase"]
-
-    handles = []
-    if s > 0:
-        handles.append(mpatches.Patch(color=TYPE_COLORS["sustained"], label=f"sustained ({s}/band)"))
-    if o > 0:
-        handles.append(mpatches.Patch(color=TYPE_COLORS["onset"], label=f"onset ({o}/band)"))
-    if p > 0:
-        handles.append(mpatches.Patch(color=TYPE_COLORS["phase"], label=f"phase ({p}/band)"))
-    return colors, handles
 
 
 # ══════════════════════════════════════════════════════════════════════════════

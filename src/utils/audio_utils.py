@@ -1,76 +1,6 @@
 import numpy as np
 import librosa
-from scipy.signal import lfilter
 from gammatone.filters import centre_freqs, make_erb_filters, erb_filterbank
-
-
-def _temporal_agc(X, sr, tau_ms, floor_frac=0.1, eps=1e-6):
-    """Per-channel temporal automatic gain control (cochlear-style).
-
-    Divides each channel by a slow *causal* envelope of itself, compressing the
-    sustained temporal dynamic range — loud passages are turned down, quiet ones
-    up — while preserving fast transients: a slow envelope lags a sudden onset,
-    so the onset is barely compressed but the steady part of a loud burst is.
-    This keeps the neuron in its graded firing regime during bursts instead of
-    saturating at the refractory ceiling.
-
-    Parameters
-    ----------
-    X : np.ndarray (n_channels, T)
-        Non-negative per-channel signal.
-    sr : int
-        Sample rate of X (Hz), used to convert ``tau_ms`` to samples.
-    tau_ms : float
-        Envelope time constant (ms). Larger = slower gain tracking (compresses
-        only slow loudness changes); smaller = faster (compresses more, can dull
-        transients).
-    floor_frac : float
-        Caps the gain in near-silence at ~``1/floor_frac`` (relative to the
-        channel-set mean) so silence/noise isn't amplified without bound.
-    """
-    tau_samp = max(tau_ms / 1000.0 * sr, 1.0)
-    a = np.exp(-1.0 / tau_samp)
-    env = lfilter([1.0 - a], [1.0, -a], X, axis=1)     # one-pole low-pass, causal
-    floor = floor_frac * float(X.mean())
-    return X / (env + floor + eps)
-
-
-def _channel_contrast(X, channel_floor=0.8, contrast_curve=1.0,
-                      noise_floor_frac=0.1, eps=1e-6):
-    """Compress the across-channel activity distribution while preserving rank.
-
-    Each channel's long-run activity (its time-mean) is remapped onto the range
-    ``[channel_floor, 1]`` and the whole map is then normalised to unit mean.
-
-    Parameters
-    ----------
-    X : np.ndarray (n_channels, T)
-        A non-negative feature map (E, dE or phase).
-    channel_floor : float in [0, 1]
-        The weakest channel's target mean relative to the strongest one — the
-        "activity distance" knob. ``1.0`` makes every channel equally active
-        (no dominance); smaller values let loud channels dominate more, while
-        order is always preserved. e.g. ``0.8`` -> weakest/strongest ≈ 0.8.
-    contrast_curve : float
-        Optional power-law shaping of the rank before the floor map. ``1.0`` is
-        linear; ``<1`` lifts mid channels toward the top, ``>1`` pushes them down.
-    noise_floor_frac : float
-        Near-silent channels are lifted to the floor, but their amplification is
-        capped at ``1 / noise_floor_frac`` to avoid blowing up noise.
-    """
-    m = X.mean(axis=1)                                 # (n_channels,)
-    m_max = float(m.max())
-    if m_max <= eps:
-        return X
-    r = m / (m_max + eps)                              # rank in [0, 1]
-    if contrast_curve != 1.0:
-        r = np.power(r, contrast_curve)
-    g = channel_floor + (1.0 - channel_floor) * r     # target per-channel mean
-    denom = np.maximum(m, m_max * noise_floor_frac)    # cap gain at 1/noise_floor_frac
-    X = X * (g / (denom + eps))[:, None]
-    X = X / (X.mean() + eps)
-    return X
-
 
 def load_mel_spectrogram(
     wav_path: str,
@@ -107,13 +37,6 @@ def auditory_frontend(
     normalization="global",
     gamma=0.5,
     eps=1e-6,
-    onset_target_mean=0.2,
-    phase_target_mean=0.2,
-    channel_floor=0.8,
-    contrast_curve=1.0,
-    noise_floor_frac=0.1,
-    agc_tau_ms=None,
-    agc_floor_frac=0.1,
 ):
     """
     Encode an audio waveform into auditory-inspired spike features.
@@ -145,35 +68,7 @@ def auditory_frontend(
         Options:
         - "global": divide by global max amplitude
         - "rms": per-channel RMS normalization
-        - "perchannel": two-stage per-channel mean equalization + per-file unit mean
-        - "contrast": remap each channel's mean onto [channel_floor, 1] (rank
-          preserved) for E, dE and phase, each normalised to unit mean. Loud
-          channels stay dominant by a bounded, tunable amount. In this mode the
-          legacy onset/phase equalization and the ``gamma`` power-law are skipped
-          (use ``channel_floor`` / ``contrast_curve`` instead).
         - None: no normalization
-
-    channel_floor : float, default=0.8
-        Only used when ``normalization="contrast"``. Weakest channel's target
-        mean relative to the strongest — the across-channel "activity distance"
-        knob. See ``_channel_contrast``.
-
-    contrast_curve : float, default=1.0
-        Only used when ``normalization="contrast"``. Power-law shaping of the
-        channel rank before the floor map.
-
-    noise_floor_frac : float, default=0.1
-        Only used when ``normalization="contrast"``. Caps the amplification of
-        near-silent channels at ``1 / noise_floor_frac``.
-
-    agc_tau_ms : float or None, default=None
-        If set, applies per-channel temporal automatic gain control to the
-        rectified cochlear signal before E/dE/phase are derived (see
-        ``_temporal_agc``). Compresses the temporal dynamic range so loud bursts
-        don't saturate downstream neurons. ``None`` disables it (back-compatible).
-
-    agc_floor_frac : float, default=0.1
-        Gain cap for AGC in near-silence (~``1/agc_floor_frac``).
 
     gamma : float, default=0.3
         Power law exponent applied to E after normalization.
@@ -240,66 +135,30 @@ def auditory_frontend(
     n_channels, T = signals.shape
 
     # ==============================
-    # 3. Rectify (+ optional temporal AGC) + Inner Hair Cell Compression
+    # 3. Inner Hair Cell Compression
     # ==============================
-    signals_pos = np.maximum(signals, 0)
-    if agc_tau_ms:
-        signals_pos = _temporal_agc(signals_pos, sr, agc_tau_ms, agc_floor_frac, eps)
-
-    E = np.log1p(alpha * signals_pos)
+    E = np.log1p(alpha * np.maximum(signals, 0))
 
     # ==============================
-    # 4. Onset detection (raw)
+    # 4. Onset detection
     # ==============================
     dE = np.diff(E, axis=1, prepend=E[:, :1])
     dE[dE < 0] = 0
+    # Normalize to [0, 1]
+    dE_max = np.max(dE) + eps
+    dE = dE / dE_max
 
     # ==============================
-    # 5. Phase signal (raw)
+    # 5. Phase signal
     # ==============================
-    phase_signal = signals_pos
+    phase_signal = np.maximum(signals, 0)
+    # Normalize to [0, 1]
+    phase_max = np.max(phase_signal) + eps
+    phase_signal = phase_signal / phase_max
 
     # ==============================
     # 6. Normalization
     # ==============================
-    if normalization == "contrast":
-        # Optional gamma power-law (gamma < 1 compresses temporal peaks, taming
-        # bursts) applied to all three maps, then remap each channel's mean onto
-        # [channel_floor, 1] (rank preserved) and normalise to unit mean.
-        # channel_floor is the across-channel "activity distance" knob. The legacy
-        # onset/phase mean-equalization is skipped here.
-        if gamma != 1.0:
-            E            = np.power(E,            gamma)
-            dE           = np.power(dE,           gamma)
-            phase_signal = np.power(phase_signal, gamma)
-        E            = _channel_contrast(E,            channel_floor, contrast_curve, noise_floor_frac, eps)
-        dE           = _channel_contrast(dE,           channel_floor, contrast_curve, noise_floor_frac, eps)
-        phase_signal = _channel_contrast(phase_signal, channel_floor, contrast_curve, noise_floor_frac, eps)
-        return {
-            "E": E,
-            "dE": dE,
-            "phase": phase_signal,
-            "cf": cf,
-            "sr": sr,
-        }
-
-    # ── Legacy modes: per-channel equalization of onset / phase ──────────────
-    # Per-channel mean equalization (mirrors E's perchannel normalization):
-    # bring every channel's mean to the same level so no channel has a
-    # systematic rate advantage, then normalize file-level mean to 1.
-    dE_ch_mean = dE.mean(axis=1, keepdims=True)
-    global_dE_mean = float(dE_ch_mean.mean())
-    noise_floor_dE = global_dE_mean * 0.1
-    dE = dE * (global_dE_mean / np.maximum(dE_ch_mean, noise_floor_dE))
-    dE = dE / (dE.mean() + eps) * onset_target_mean
-
-    # Per-channel mean equalization: same rationale as dE above.
-    phase_ch_mean = phase_signal.mean(axis=1, keepdims=True)
-    global_phase_mean = float(phase_ch_mean.mean())
-    noise_floor_phase = global_phase_mean * 0.1
-    phase_signal = phase_signal * (global_phase_mean / np.maximum(phase_ch_mean, noise_floor_phase))
-    phase_signal = phase_signal / (phase_signal.mean() + eps) * phase_target_mean
-
     if normalization == "global":
         max_val = np.max(np.abs(E)) + eps
         E = E / max_val
@@ -308,25 +167,11 @@ def auditory_frontend(
         rms = np.sqrt(np.mean(E**2, axis=1, keepdims=True)) + eps
         E = E / rms
 
-    elif normalization == "perchannel":
-        # Stage 1 — per-channel: bring every channel's mean to the same level so
-        # no channel has a systematic long-run rate advantage within a file.
-        # noise_floor caps the gain at 10× for near-silent channels.
-        ch_mean     = E.mean(axis=1, keepdims=True)        # (n_channels, 1)
-        global_mean = float(ch_mean.mean())
-        noise_floor = global_mean * 0.1                    # cap gain at 10×
-        E = E * (global_mean / np.maximum(ch_mean, noise_floor))
-        # Stage 2 — per-file: normalise the whole matrix to E.mean() == 1 so
-        # total activity (and therefore spike count) is consistent across files.
-        E = E / (E.mean() + eps)
-
     elif normalization is None:
         pass
 
     else:
-        raise ValueError(
-            "normalization must be {'global', 'rms', 'perchannel', 'contrast', None}"
-        )
+        raise ValueError("normalization must be {'global', 'rms', None}")
 
     if gamma != 1.0:
         E = np.power(E, gamma)
@@ -338,3 +183,4 @@ def auditory_frontend(
         "cf": cf,
         "sr": sr,
     }
+

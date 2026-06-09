@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from src.utils.spike_encoding import compute_spike_input_current
+# from src.utils.weights_utils import gaussian_weight_matrix, l1_normalise_weights
 from src.recorder import Recorder
 
 import time
@@ -17,26 +18,15 @@ start = time.time()
 # ============================================================
 # TODO: set the path
 wav_files = [
-    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00002.wav",
-    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00001.wav"
-    # "datasets/vox1_cleaned/wav_dev/id10040/id10040_00003/00002.wav",
-    # "datasets/vox1_cleaned/wav_dev/id10040/id10040_00003/00003.wav"
-    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00006/00004.wav",
-    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00009/00005.wav",
-    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00017/00003.wav"
-    
-    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00006/00001.wav",
-    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00006/00002.wav"
-    
-    "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00001.wav",
-    "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00001.wav",
-    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00002.wav",
-    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00002.wav"
+    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00002.wav",
+    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00006/00004.wav",
+    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00009/00005.wav",
+    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00017/00003.wav"
     
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 2
+EPOCHS   = 4
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -44,31 +34,9 @@ SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ============================================================
 
 N_IN = 672   # 96 channels × 7 neurons/channel
-N_H  = 672
+# N_H  = 672
 
 DT_SIM = 1 * ms
-
-# -- Input encoding (compute_spike_input_current) --
-ENC_NUM_FILTERS      = 96
-ENC_SUSTAINED        = 4     # sustained neurons / band
-ENC_ONSET            = 2     # onset neurons / band
-ENC_PHASE            = 1     # phase neurons / band
-ENC_SUST_SPREAD_MIN  = 1.0
-ENC_SUST_SPREAD_MAX  = 1.3
-ENC_SUST_GAIN        = 0.4
-ENC_ONSET_GAIN       = 0.36
-ENC_PHASE_GAIN       = 0.5
-ENC_SCALE            = 0.1    # global input-current gain — the main activity / STDP-health knob, tune it
-ENC_CHANNEL_FLOOR    = 0.25   # across-channel "activity distance": 1.0 = equal, <1 = louder channels dominate
-
-# -- Burst de-saturation (temporal dynamic-range compression) --
-# AGC compresses each channel's slow loudness envelope so loud bursts stay in the
-# neuron's graded firing regime instead of saturating; transients are preserved.
-# Set ENC_AGC_TAU_MS=None to disable.  After changing these, re-check ENC_SCALE.
-ENC_AGC_TAU_MS       = 60.0   # AGC envelope time constant (ms); smaller tracks bursts faster
-ENC_AGC_FLOOR        = 0.1    # AGC gain cap in near-silence (~1/floor)
-ENC_ALPHA            = 1.0    # log-compression strength (higher = more compression)
-ENC_GAMMA            = 0.475    # power-law on E/dE/phase (gamma<1 tames bursts; 1.0 = off)
 
 # -- Input layer (adaptive LIF) --
 tau_m       = 40 * ms
@@ -77,49 +45,46 @@ tau_current = 1 * ms
 beta        = 1
 v_th_in     = 1.0
 
-# -- Hidden layer (adaptive-threshold LIF + slow AHP) --
-tau_h    = 50  * ms
-tau_vth  = 100 * ms
-vth_rest = 0.8
-vth_init = 0.8
-vth_jump = 0.3
-tau_a_h  = 500 * ms
-beta_h   = 0.1
+# -- Hidden layer (adaptive-threshold LIF) --
+# tau_h    = 50 * ms
+# tau_vth  = 100 * ms
+# vth_rest = 0.8
+# vth_init = 0.8
+# vth_jump = 0.3
 
-EXC_SUM_LIMIT = 2.0
+# -- STDP --
+# taupre      = 20 * ms
+# taupost     = 20 * ms
+# Apre_delta  =  0.004
+# Apost_delta = -0.0048
 
-# -- STDP: excitatory (in→hid) --
-taupre_exc      = 20  * ms
-taupost_exc     = 20  * ms
-Apre_delta_exc  =  0.001
-Apost_delta_exc = -0.0012
-wmax_exc        = 1.0
-wmin_exc        = 0.0
+# -- Synaptic weight bounds --
+# wmax = 1.0
+# wmin = 0.0
 
-# -- STDP: inhibitory (hid→hid) --
-taupre_inh      = 20  * ms
-taupost_inh     = 20  * ms
-Apre_delta_inh  =  0.001
-Apost_delta_inh = -0.0012
-wmax_inh        = 0.2   
-wmin_inh        = 0.0
+# -- Weight initialisation (Gaussian, toroidal topology) --
+# W_INIT_SIGMA     = N_IN / 5
+# W_INIT_NOISE_STD = 0.005
+# W_INIT_SUM       = 2
+
+# -- Homeostatic normalisation --
+# NORM_LIMIT = 2
+
 
 
 # ============================================================
 # Initialise weight matrices
+#
+# TO ADD A NEW SYNAPSE GROUP: add a weight matrix here following
+# the same pattern and give it a descriptive name.
 # ============================================================
 
-# Excitatory: input → hidden, shape (N_IN, N_H)
-# Uniform init, column-sum normalised to 2
-w_ih = np.random.uniform(0, 1, (N_IN, N_H)).astype(float)
-col_sums = w_ih.sum(axis=0)
-col_sums[col_sums == 0] = 1.0
-w_ih = w_ih / col_sums * EXC_SUM_LIMIT
-w_ih = np.clip(w_ih, wmin_exc, wmax_exc)
+# w_ih = gaussian_weight_matrix(N_IN, N_H, W_INIT_SIGMA, W_INIT_NOISE_STD,
+#                                W_INIT_SUM, wmin, wmax)
+# example for a second synapse group:
+# w_ho = np.random.uniform(wmin, wmax, size=(N_H, N_OUT))
 
-# Inhibitory: hidden → hidden, shape (N_H, N_H), no self-connections
-# Zero init — STDP grows weights from scratch
-w_hh = np.zeros((N_H, N_H), dtype=float)
+# init_weights = {"in->hid": w_ih.copy()}
 
 
 # ============================================================
@@ -129,6 +94,9 @@ w_hh = np.zeros((N_H, N_H), dtype=float)
 defaultclock.dt = DT_SIM
 
 # ── Input neurons ──────────────────────────────────────────────────────────────
+# net.store/restore resets the Brian2 clock to 0 before every sample, so
+# I_timed(t, i) always indexes from the beginning of the array.
+# Do not call start_scope() or rebuild the network inside the sample loop.
 eqs_in = """
 dv/dt = (-v - a) / tau_m + I_timed(t, i) / tau_current : 1
 da/dt = -a / tau_a : 1
@@ -144,142 +112,76 @@ G_in = NeuronGroup(
 _dummy_I = np.zeros((1, N_IN), dtype=float)
 G_in.namespace["I_timed"] = TimedArray(_dummy_I, dt=DT_SIM)
 
-# ── Hidden neurons (adaptive-threshold LIF + slow AHP) ───────────────────────
-eqs_h = f"""
-dv/dt   = (-v - a_h) / tau_h              : 1
-dvth/dt = -(vth - {vth_rest}) / tau_vth   : 1
-da_h/dt = -a_h / tau_a_h                  : 1
-"""
-G_h = NeuronGroup(
-    N_H, eqs_h,
-    threshold="v > vth",
-    reset=f"v=0; vth=vth+{vth_jump}; a_h+={beta_h}",
-    refractory=2 * ms,
-    method="euler"
-)
-G_h.vth = vth_init
+# ── Hidden neurons ────────────────────────────────────────────────────────────
+#
+# TO ADD A NEW NEURON GROUP: copy this block, change the name and equations.
+# Then register it with the recorder below via recorder.track_group().
+#
+# eqs_h = f"""
+# dv/dt   = -v / tau_h                    : 1
+# dvth/dt = -(vth - {vth_rest}) / tau_vth : 1
+# """
+# G_h = NeuronGroup(
+#     N_H, eqs_h,
+#     threshold="v > vth",
+#     reset=f"v=0; vth=vth+{vth_jump};",
+#     refractory=2 * ms,
+#     method="euler"
+# )
 
-# ── STDP synapse model (shared) ───────────────────────────────────────────────
-stdp_model = """
-w         : 1
-dapre/dt  = -apre  / taupre  : 1 (event-driven)
-dapost/dt = -apost / taupost : 1 (event-driven)
-"""
+# ── STDP synapses: input → hidden ─────────────────────────────────────────────
+#
+# TO ADD A NEW SYNAPSE GROUP: copy this block, change the name and connect
+# to the right groups. Then register it with the recorder below.
+#
+# stdp_model = """
+# w          : 1
+# dapre/dt   = -apre  / taupre  : 1 (event-driven)
+# dapost/dt  = -apost / taupost : 1 (event-driven)
+# """
+# on_pre  = "v_post += w\napre += Apre_delta\nw = clip(w + apost*(w-wmin), wmin, wmax)"
+# on_post = "apost += Apost_delta\nw = clip(w + apre*(wmax-w), wmin, wmax)"
+#
+# S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
+# S_ih.connect()
+# src_ih = np.array(S_ih.i)
+# tgt_ih = np.array(S_ih.j)
 
-# ── Excitatory synapses: input → hidden ───────────────────────────────────────
-on_pre_exc  = "v_post += w\napre += Apre_delta\nw = clip(w + apost*(w - wmin), wmin, wmax)"
-on_post_exc = "apost += Apost_delta\nw = clip(w + apre*(wmax - w), wmin, wmax)"
-
-S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre_exc, on_post=on_post_exc,
-                namespace={'taupre': taupre_exc, 'taupost': taupost_exc,
-                           'Apre_delta': Apre_delta_exc, 'Apost_delta': Apost_delta_exc,
-                           'wmin': wmin_exc, 'wmax': wmax_exc})
-S_ih.connect()
-src_ih = np.array(S_ih.i)
-tgt_ih = np.array(S_ih.j)
-S_ih.w = w_ih[src_ih, tgt_ih]
-
-# ── Inhibitory synapses: hidden → hidden (i≠j) ───────────────────────────────
-on_pre_inh  = "v_post -= w\napre += Apre_delta\nw = clip(w + apost*(w - wmin), wmin, wmax)"
-on_post_inh = "apost += Apost_delta\nw = clip(w + apre*(wmax - w), wmin, wmax)"
-
-S_hh = Synapses(G_h, G_h, model=stdp_model, on_pre=on_pre_inh, on_post=on_post_inh,
-                namespace={'taupre': taupre_inh, 'taupost': taupost_inh,
-                           'Apre_delta': Apre_delta_inh, 'Apost_delta': Apost_delta_inh,
-                           'wmin': wmin_inh, 'wmax': wmax_inh})
-S_hh.connect(condition="i != j")
-src_hh = np.array(S_hh.i)
-tgt_hh = np.array(S_hh.j)
-S_hh.w = w_hh[src_hh, tgt_hh]
-
-@network_operation(dt=500 * ms)
-def normalise_exc_weights(t):
-    if float(t / ms) == 0:
-        return
-    w_flat = np.array(S_ih.w)
-    W = np.zeros((N_IN, N_H))
-    W[src_ih, tgt_ih] = w_flat
-    col_sums = W.sum(axis=0)
-    col_sums[col_sums == 0] = 1.0
-    W = W / col_sums * EXC_SUM_LIMIT
-    W = np.clip(W, wmin_exc, wmax_exc)
-    S_ih.w = W[src_ih, tgt_ih]
-
-# ── Full in->hid weight-matrix snapshots (every 500 ms, AFTER normalisation) ──
-# These buffers hold the *current sample's* frames only; the training loop clears
-# them before each net.run and stashes the result afterwards.  when='end' makes
-# this op run in the 'end' scheduling slot, after normalise_exc_weights (default
-# when='start') on the same 500 ms tick, so every frame is post-normalisation.
-_evo_frames = []   # list of (N_IN, N_H) float32 — current sample only
-_evo_times  = []   # list of float (ms) — current sample only
-
-@network_operation(dt=500 * ms, when='end')
-def snapshot_in_to_hid(t):
-    t_ms = float(t / ms)
-    if t_ms == 0:          # skip t=0, matching normalise_exc_weights
-        return
-    W = np.zeros((N_IN, N_H))
-    W[src_ih, tgt_ih] = np.array(S_ih.w)
-    _evo_frames.append(W.astype(np.float32))
-    _evo_times.append(t_ms)
-
-net = Network(G_in, G_h, S_ih, S_hh, normalise_exc_weights, snapshot_in_to_hid)
+net = Network(G_in)
 
 
 # ============================================================
 # Recorder setup
+#
+# Register every group and synapse you want to be recordable.
+# The recorder reads record_config.yaml to decide what to actually record —
+# registering a group here that has no config entry is harmless (nothing recorded).
+#
+# TO ADD A NEW GROUP:    recorder.track_group("mygroup", G_new)
+# TO ADD A NEW SYNAPSE:  recorder.track_synapses("pre->post", S_new, src_new, tgt_new)
+#
+# That is the only change needed in this file when extending the architecture.
 # ============================================================
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record_and_visualize_config.yaml")
 recorder = Recorder(CONFIG_PATH, net)
 
 recorder.track_group("input",  G_in)
-recorder.track_group("hidden", G_h)
-recorder.track_synapses("in->hid",  S_ih, src_ih, tgt_ih)
-recorder.track_synapses("hid->hid", S_hh, src_hh, tgt_hh)
+# recorder.track_group("hidden", G_h)
+# recorder.track_group("output", G_out)   # <-- add new groups here
 
-recorder.build()
+# recorder.track_synapses("in->hid", S_ih, src_ih, tgt_ih)
+# recorder.track_synapses("hid->out", S_ho, src_ho, tgt_ho)   # <-- add new synapses here
 
+recorder.build()   # attaches all Brian2 monitors — call once, after all registrations
+
+# Snapshot the clean initial state (clock=0, v=0, a=0, vth=vth_init,
+# not_refractory=True, empty monitors).  net.restore('init') before every
+# sample brings the network back to this state, which is the only correct
+# way to reset all Brian2 internal state (including refractory bookkeeping)
+# without rebuilding the network.
+# G_h.vth = vth_init   # default Brian2 init is 0; set before store
 net.store('init')
-
-
-# ============================================================
-# Pre-encode inputs  (once — inputs are identical every epoch)
-# ============================================================
-# Encoding is deterministic per file and weight-independent, so we do it once up
-# front and cache the current. Cross-file activity consistency comes from the
-# "contrast" per-channel normalization; ENC_SCALE sets the absolute level.
-
-samples = []  # (audio_path, I, T, duration_s)
-print("\nPre-encoding inputs ...")
-for sample_idx, audio_path in enumerate(wav_files):
-    try:
-        I, T = compute_spike_input_current(
-            audio_path,
-            scale=ENC_SCALE,
-            num_filters=ENC_NUM_FILTERS,
-            sustained_per_band=ENC_SUSTAINED,
-            onset_per_band=ENC_ONSET,
-            phase_per_band=ENC_PHASE,
-            sust_spread_min=ENC_SUST_SPREAD_MIN,
-            sust_spread_max=ENC_SUST_SPREAD_MAX,
-            sust_gain=ENC_SUST_GAIN,
-            onset_gain=ENC_ONSET_GAIN,
-            phase_gain=ENC_PHASE_GAIN,
-            normalization="contrast",
-            channel_floor=ENC_CHANNEL_FLOOR,
-            alpha=ENC_ALPHA,
-            gamma=ENC_GAMMA,
-            agc_tau_ms=ENC_AGC_TAU_MS,
-            agc_floor_frac=ENC_AGC_FLOOR,
-        )
-    except Exception as e:
-        print(f"  [sample {sample_idx}] error encoding {audio_path}: {e}")
-        continue
-
-    duration_s = float(T) * float(DT_SIM)
-    print(f"  [sample {sample_idx}] {os.path.relpath(audio_path)} T={T}")
-    samples.append((audio_path, I, T, duration_s))
 
 
 # ============================================================
@@ -292,76 +194,73 @@ for epoch_idx in range(EPOCHS):
     print(f"{'='*60}")
 
     recorder.reset_epoch()
-    epoch_evo = []   # per-sample dicts: {sample_idx, frames (F,N_IN,N_H), times (F,)}
 
-    for sample_idx, (audio_path, I, T, duration_s) in enumerate(samples):
-        print(f"  [epoch {epoch_idx}, sample {sample_idx}/{len(samples)-1}] "
+    for sample_idx, audio_path in enumerate(wav_files):
+        print(f"  [epoch {epoch_idx}, sample {sample_idx}/{len(wav_files)-1}] "
               f"{os.path.relpath(audio_path)}")
 
+        # ── Encode audio ───────────────────────────────────────────────────────
+        try:
+            I, T = compute_spike_input_current(
+                audio_path,
+                scale=0.8,
+                num_filters=96,
+                sustained_per_band=4,
+                onset_per_band=2,
+                phase_per_band=1,
+                sust_spread_min=0.7,
+                sust_spread_max=1.3,
+            )
+        except Exception as e:
+            print(f"    Error encoding audio: {e}")
+            continue
+
+        duration_s = float(T) * float(DT_SIM)
+
         # ── Reset to clean state, then inject this sample's data ──────────────
+        # restore resets: clock→0, v, a, not_refractory, and all monitor buffers.
         net.restore('init')
 
         G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
 
-        # Restore persistent weights and zero STDP traces
-        S_ih.w = w_ih[src_ih, tgt_ih];  S_ih.apre = 0;  S_ih.apost = 0
-        S_hh.w = w_hh[src_hh, tgt_hh]; S_hh.apre = 0;  S_hh.apost = 0
+        # Weights survive across samples — override the restored initial weights.
+        # S_ih.w    = w_ih[src_ih, tgt_ih]
+        # S_ih.apre  = 0
+        # S_ih.apost = 0
+        # TO ADD A NEW SYNAPSE GROUP reset:
+        # S_ho.w     = w_ho[src_ho, tgt_ho]
+        # S_ho.apre  = 0
+        # S_ho.apost = 0
 
+        # Recorder tracks elapsed time in Python; since restore resets the
+        # Brian2 clock to 0, spike times in the monitor are always [0, T] ms.
+        # Reset _elapsed_ms so start_ms = 0 and the slice arithmetic is correct.
         recorder._elapsed_ms = 0.0
 
         # ── Record: before ─────────────────────────────────────────────────────
         recorder.before_sample(sample_idx)
-        _evo_frames.clear()   # full-matrix snapshots for this sample only
-        _evo_times.clear()
 
         # ── Simulate ───────────────────────────────────────────────────────────
         net.run(T * DT_SIM)
 
         # ── Extract updated weights ────────────────────────────────────────────
-        w_ih_new = np.zeros((N_IN, N_H))
-        w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
-        w_ih = w_ih_new
+        # w_ih_new = np.zeros((N_IN, N_H))
+        # w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
+        # TO ADD A NEW SYNAPSE GROUP extraction:
+        # w_ho_new = np.zeros((N_H, N_OUT))
+        # w_ho_new[src_ho, tgt_ho] = np.array(S_ho.w)
 
-        w_hh_new = np.zeros((N_H, N_H))
-        w_hh_new[src_hh, tgt_hh] = np.array(S_hh.w)
-        w_hh = w_hh_new
+        # ── Custom normalisation ───────────────────────────────────────────────
+        # spiked_hidden = np.unique(recorder.spikes_this_sample("hidden"))
+        # w_ih = l1_normalise_weights(w_ih_new, spiked_hidden, NORM_LIMIT, wmin, wmax)
+        # spiked_output = np.unique(recorder.spikes_this_sample("output"))
+        # w_ho = normalise_weights(w_ho_new, spiked_output, NORM_LIMIT, wmin, wmax)
 
         # ── Record: after ──────────────────────────────────────────────────────
-        recorder.after_sample(sample_idx, duration_s,
-                              w_matrices={"in->hid": w_ih, "hid->hid": w_hh})
-
-        # ── Stash this sample's full-matrix evolution ──────────────────────────
-        if _evo_frames:
-            epoch_evo.append({
-                "sample_idx": sample_idx,
-                "frames": np.stack(_evo_frames),                # (F, N_IN, N_H)
-                "times":  np.array(_evo_times, dtype=np.float32),
-            })
-        else:
-            print(f"    [evo] sample {sample_idx} had no 500ms snapshot (T<500ms)")
+        recorder.after_sample(sample_idx, duration_s)
 
     # ── End of epoch ──────────────────────────────────────────────────────────
-    recorder.save_epoch(epoch_idx, save_dir=SAVE_DIR,
-                        final_weights={"in->hid": w_ih, "hid->hid": w_hh})
-
-    # ── Save full in->hid weight-matrix evolution for this epoch ───────────────
-    evo_arrays = {
-        "N_IN":               np.int32(N_IN),
-        "N_H":                np.int32(N_H),
-        "num_filters":        np.int32(ENC_NUM_FILTERS),
-        "sustained_per_band": np.int32(ENC_SUSTAINED),
-        "onset_per_band":     np.int32(ENC_ONSET),
-        "phase_per_band":     np.int32(ENC_PHASE),
-        "wmax_exc":           np.float32(wmax_exc),
-        "n_samples":          np.int32(len(epoch_evo)),
-    }
-    for entry in epoch_evo:
-        n = entry["sample_idx"]
-        evo_arrays[f"sample{n}_frames"] = entry["frames"].astype(np.float32)
-        evo_arrays[f"sample{n}_times"]  = entry["times"]
-    evo_path = os.path.join(SAVE_DIR, f"weight_evolution_epoch_{epoch_idx:03d}.npz")
-    np.savez_compressed(evo_path, **evo_arrays)
-    print(f"  [evo] saved in->hid evolution → {evo_path}")
+    recorder.save_epoch(epoch_idx, save_dir=SAVE_DIR)
 
 
 # ============================================================

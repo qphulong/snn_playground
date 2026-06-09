@@ -15,14 +15,6 @@ def compute_spike_input_current(
     audio_sample_rate=16000,
     simulation_sample_rate=1000,
     num_filters=100,
-    normalization="global",
-    channel_floor=0.8,
-    contrast_curve=1.0,
-    noise_floor_frac=0.1,
-    alpha=1.0,
-    gamma=0.5,
-    agc_tau_ms=None,
-    agc_floor_frac=0.1,
 ):
     """
     Convert an audio file into a downsampled input current matrix for a spiking neural network.
@@ -89,27 +81,6 @@ def compute_spike_input_current(
         The current matrix is downsampled from `audio_sample_rate` to this rate by
         block-averaging. Must evenly divide `audio_sample_rate`.
 
-    normalization : str, default="global"
-        Passed through to `auditory_frontend`. Use "contrast" for the bounded
-        per-channel dominance mode controlled by `channel_floor`.
-
-    channel_floor, contrast_curve, noise_floor_frac
-        Forwarded to `auditory_frontend`; only consulted when
-        `normalization="contrast"`. See `auditory_frontend` for details.
-
-    alpha : float, default=1.0
-        Forwarded to `auditory_frontend` — log-compression strength. Higher
-        compresses the dynamic range more (tames loud bursts).
-
-    gamma : float, default=0.5
-        Forwarded to `auditory_frontend` — power-law compression exponent.
-        In "contrast" mode it is applied to E/dE/phase (gamma < 1 tames bursts);
-        gamma = 1.0 disables it. (Legacy "global"/"rms" callers keep the 0.5 default.)
-
-    agc_tau_ms, agc_floor_frac
-        Forwarded to `auditory_frontend` — per-channel temporal AGC. Set
-        `agc_tau_ms` to enable burst dynamic-range compression; None disables.
-
     Returns
     -------
     I_sim : np.ndarray, shape (N_in, T_sim)
@@ -121,18 +92,7 @@ def compute_spike_input_current(
         total simulation duration in Brian2 timesteps.
     """
 
-    feats = auditory_frontend(
-        audio_path,
-        num_filters=num_filters,
-        normalization=normalization,
-        channel_floor=channel_floor,
-        contrast_curve=contrast_curve,
-        noise_floor_frac=noise_floor_frac,
-        alpha=alpha,
-        gamma=gamma,
-        agc_tau_ms=agc_tau_ms,
-        agc_floor_frac=agc_floor_frac,
-    )
+    feats = auditory_frontend(audio_path, num_filters=num_filters)
 
     E = feats["E"]
     dE = feats["dE"]
