@@ -99,7 +99,7 @@ taupre_inh      = 20  * ms
 taupost_inh     = 20  * ms
 Apre_delta_inh  =  0.001
 Apost_delta_inh = -0.0012
-wmax_inh        = 0.2
+wmax_inh        = 0.2   
 wmin_inh        = 0.0
 
 
@@ -203,7 +203,25 @@ def normalise_exc_weights(t):
     W = np.clip(W, wmin_exc, wmax_exc)
     S_ih.w = W[src_ih, tgt_ih]
 
-net = Network(G_in, G_h, S_ih, S_hh, normalise_exc_weights)
+# ── Full in->hid weight-matrix snapshots (every 500 ms, AFTER normalisation) ──
+# These buffers hold the *current sample's* frames only; the training loop clears
+# them before each net.run and stashes the result afterwards.  when='end' makes
+# this op run in the 'end' scheduling slot, after normalise_exc_weights (default
+# when='start') on the same 500 ms tick, so every frame is post-normalisation.
+_evo_frames = []   # list of (N_IN, N_H) float32 — current sample only
+_evo_times  = []   # list of float (ms) — current sample only
+
+@network_operation(dt=500 * ms, when='end')
+def snapshot_in_to_hid(t):
+    t_ms = float(t / ms)
+    if t_ms == 0:          # skip t=0, matching normalise_exc_weights
+        return
+    W = np.zeros((N_IN, N_H))
+    W[src_ih, tgt_ih] = np.array(S_ih.w)
+    _evo_frames.append(W.astype(np.float32))
+    _evo_times.append(t_ms)
+
+net = Network(G_in, G_h, S_ih, S_hh, normalise_exc_weights, snapshot_in_to_hid)
 
 
 # ============================================================
@@ -272,6 +290,7 @@ for epoch_idx in range(EPOCHS):
     print(f"{'='*60}")
 
     recorder.reset_epoch()
+    epoch_evo = []   # per-sample dicts: {sample_idx, frames (F,N_IN,N_H), times (F,)}
 
     for sample_idx, (audio_path, I, T, duration_s) in enumerate(samples):
         print(f"  [epoch {epoch_idx}, sample {sample_idx}/{len(samples)-1}] "
@@ -290,6 +309,8 @@ for epoch_idx in range(EPOCHS):
 
         # ── Record: before ─────────────────────────────────────────────────────
         recorder.before_sample(sample_idx)
+        _evo_frames.clear()   # full-matrix snapshots for this sample only
+        _evo_times.clear()
 
         # ── Simulate ───────────────────────────────────────────────────────────
         net.run(T * DT_SIM)
@@ -307,9 +328,38 @@ for epoch_idx in range(EPOCHS):
         recorder.after_sample(sample_idx, duration_s,
                               w_matrices={"in->hid": w_ih, "hid->hid": w_hh})
 
+        # ── Stash this sample's full-matrix evolution ──────────────────────────
+        if _evo_frames:
+            epoch_evo.append({
+                "sample_idx": sample_idx,
+                "frames": np.stack(_evo_frames),                # (F, N_IN, N_H)
+                "times":  np.array(_evo_times, dtype=np.float32),
+            })
+        else:
+            print(f"    [evo] sample {sample_idx} had no 500ms snapshot (T<500ms)")
+
     # ── End of epoch ──────────────────────────────────────────────────────────
     recorder.save_epoch(epoch_idx, save_dir=SAVE_DIR,
                         final_weights={"in->hid": w_ih, "hid->hid": w_hh})
+
+    # ── Save full in->hid weight-matrix evolution for this epoch ───────────────
+    evo_arrays = {
+        "N_IN":               np.int32(N_IN),
+        "N_H":                np.int32(N_H),
+        "num_filters":        np.int32(ENC_NUM_FILTERS),
+        "sustained_per_band": np.int32(ENC_SUSTAINED),
+        "onset_per_band":     np.int32(ENC_ONSET),
+        "phase_per_band":     np.int32(ENC_PHASE),
+        "wmax_exc":           np.float32(wmax_exc),
+        "n_samples":          np.int32(len(epoch_evo)),
+    }
+    for entry in epoch_evo:
+        n = entry["sample_idx"]
+        evo_arrays[f"sample{n}_frames"] = entry["frames"].astype(np.float32)
+        evo_arrays[f"sample{n}_times"]  = entry["times"]
+    evo_path = os.path.join(SAVE_DIR, f"weight_evolution_epoch_{epoch_idx:03d}.npz")
+    np.savez_compressed(evo_path, **evo_arrays)
+    print(f"  [evo] saved in->hid evolution → {evo_path}")
 
 
 # ============================================================
