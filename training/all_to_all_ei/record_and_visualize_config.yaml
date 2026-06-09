@@ -43,7 +43,7 @@ visualize:
 
   # Which samples and epochs to plot (comment out to plot all)
   visualize_samples: [0, 1, 2, 3]
-  visualize_epoch:   [0,1,2,3,4,5]
+  visualize_epoch:   [0,1]
 
   track_weight_delta: false
 

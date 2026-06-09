@@ -17,15 +17,24 @@ start = time.time()
 # ============================================================
 # TODO: set the path
 wav_files = [
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00002.wav",
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00001.wav"
+    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00002.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00001.wav"
+    # "datasets/vox1_cleaned/wav_dev/id10040/id10040_00003/00002.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10040/id10040_00003/00003.wav"
     # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00006/00004.wav",
     # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00009/00005.wav",
     # "datasets/vox1_cleaned/wav_dev/id10022/id10022_00017/00003.wav"
+    
+    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00006/00001.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00006/00002.wav"
+    
+    "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00002.wav"
+    
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 6
+EPOCHS   = 2
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
