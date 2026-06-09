@@ -29,7 +29,9 @@ wav_files = [
     # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00006/00002.wav"
     
     "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00001.wav",
-    "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00002.wav"
+    "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00001.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00002.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10125/id10125_00010/00002.wav"
     
 ]
 print(f"Found {len(wav_files)} wav files")
@@ -51,13 +53,13 @@ ENC_NUM_FILTERS      = 96
 ENC_SUSTAINED        = 4     # sustained neurons / band
 ENC_ONSET            = 2     # onset neurons / band
 ENC_PHASE            = 1     # phase neurons / band
-ENC_SUST_SPREAD_MIN  = 0.7
+ENC_SUST_SPREAD_MIN  = 1.0
 ENC_SUST_SPREAD_MAX  = 1.3
 ENC_SUST_GAIN        = 0.4
 ENC_ONSET_GAIN       = 0.36
 ENC_PHASE_GAIN       = 0.5
 ENC_SCALE            = 0.1    # global input-current gain — the main activity / STDP-health knob, tune it
-ENC_CHANNEL_FLOOR    = 0.9   # across-channel "activity distance": 1.0 = equal, <1 = louder channels dominate
+ENC_CHANNEL_FLOOR    = 0.25   # across-channel "activity distance": 1.0 = equal, <1 = louder channels dominate
 
 # -- Burst de-saturation (temporal dynamic-range compression) --
 # AGC compresses each channel's slow loudness envelope so loud bursts stay in the

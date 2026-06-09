@@ -1,6 +1,38 @@
 import numpy as np
 import librosa
+from scipy.signal import lfilter
 from gammatone.filters import centre_freqs, make_erb_filters, erb_filterbank
+
+
+def _temporal_agc(X, sr, tau_ms, floor_frac=0.1, eps=1e-6):
+    """Per-channel temporal automatic gain control (cochlear-style).
+
+    Divides each channel by a slow *causal* envelope of itself, compressing the
+    sustained temporal dynamic range — loud passages are turned down, quiet ones
+    up — while preserving fast transients: a slow envelope lags a sudden onset,
+    so the onset is barely compressed but the steady part of a loud burst is.
+    This keeps the neuron in its graded firing regime during bursts instead of
+    saturating at the refractory ceiling.
+
+    Parameters
+    ----------
+    X : np.ndarray (n_channels, T)
+        Non-negative per-channel signal.
+    sr : int
+        Sample rate of X (Hz), used to convert ``tau_ms`` to samples.
+    tau_ms : float
+        Envelope time constant (ms). Larger = slower gain tracking (compresses
+        only slow loudness changes); smaller = faster (compresses more, can dull
+        transients).
+    floor_frac : float
+        Caps the gain in near-silence at ~``1/floor_frac`` (relative to the
+        channel-set mean) so silence/noise isn't amplified without bound.
+    """
+    tau_samp = max(tau_ms / 1000.0 * sr, 1.0)
+    a = np.exp(-1.0 / tau_samp)
+    env = lfilter([1.0 - a], [1.0, -a], X, axis=1)     # one-pole low-pass, causal
+    floor = floor_frac * float(X.mean())
+    return X / (env + floor + eps)
 
 
 def _channel_contrast(X, channel_floor=0.8, contrast_curve=1.0,
@@ -80,6 +112,8 @@ def auditory_frontend(
     channel_floor=0.8,
     contrast_curve=1.0,
     noise_floor_frac=0.1,
+    agc_tau_ms=None,
+    agc_floor_frac=0.1,
 ):
     """
     Encode an audio waveform into auditory-inspired spike features.
@@ -131,6 +165,15 @@ def auditory_frontend(
     noise_floor_frac : float, default=0.1
         Only used when ``normalization="contrast"``. Caps the amplification of
         near-silent channels at ``1 / noise_floor_frac``.
+
+    agc_tau_ms : float or None, default=None
+        If set, applies per-channel temporal automatic gain control to the
+        rectified cochlear signal before E/dE/phase are derived (see
+        ``_temporal_agc``). Compresses the temporal dynamic range so loud bursts
+        don't saturate downstream neurons. ``None`` disables it (back-compatible).
+
+    agc_floor_frac : float, default=0.1
+        Gain cap for AGC in near-silence (~``1/agc_floor_frac``).
 
     gamma : float, default=0.3
         Power law exponent applied to E after normalization.
@@ -197,9 +240,13 @@ def auditory_frontend(
     n_channels, T = signals.shape
 
     # ==============================
-    # 3. Inner Hair Cell Compression
+    # 3. Rectify (+ optional temporal AGC) + Inner Hair Cell Compression
     # ==============================
-    E = np.log1p(alpha * np.maximum(signals, 0))
+    signals_pos = np.maximum(signals, 0)
+    if agc_tau_ms:
+        signals_pos = _temporal_agc(signals_pos, sr, agc_tau_ms, agc_floor_frac, eps)
+
+    E = np.log1p(alpha * signals_pos)
 
     # ==============================
     # 4. Onset detection (raw)
@@ -210,17 +257,21 @@ def auditory_frontend(
     # ==============================
     # 5. Phase signal (raw)
     # ==============================
-    phase_signal = np.maximum(signals, 0)
+    phase_signal = signals_pos
 
     # ==============================
     # 6. Normalization
     # ==============================
     if normalization == "contrast":
-        # Remap each channel's mean onto [channel_floor, 1] (rank preserved) for
-        # all three maps, each then normalised to unit mean. channel_floor is the
-        # across-channel "activity distance" knob. The legacy onset/phase
-        # equalization and the gamma power-law are intentionally skipped here —
-        # channel_floor / contrast_curve play that role instead.
+        # Optional gamma power-law (gamma < 1 compresses temporal peaks, taming
+        # bursts) applied to all three maps, then remap each channel's mean onto
+        # [channel_floor, 1] (rank preserved) and normalise to unit mean.
+        # channel_floor is the across-channel "activity distance" knob. The legacy
+        # onset/phase mean-equalization is skipped here.
+        if gamma != 1.0:
+            E            = np.power(E,            gamma)
+            dE           = np.power(dE,           gamma)
+            phase_signal = np.power(phase_signal, gamma)
         E            = _channel_contrast(E,            channel_floor, contrast_curve, noise_floor_frac, eps)
         dE           = _channel_contrast(dE,           channel_floor, contrast_curve, noise_floor_frac, eps)
         phase_signal = _channel_contrast(phase_signal, channel_floor, contrast_curve, noise_floor_frac, eps)
