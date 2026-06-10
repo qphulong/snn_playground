@@ -43,7 +43,7 @@ record:
 visualize:
 
   # Which samples and epochs to plot (comment out to plot all)
-  visualize_samples: [0, 1, 2, 3]
+  visualize_samples: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
   visualize_epoch:   [0,1,2,3]
 
   track_weight_delta: false
@@ -55,6 +55,13 @@ visualize:
     input:
       spike_raster:       true
       mean_firing_rate:   true
+      # Color raster / spike-count / firing-rate plots by neuron type.
+      # Order must match the per-band layout used by compute_spike_input_current
+      # (sustained, then onset, then phase). counts must sum to neurons_per_band.
+      neuron_types:
+        - {name: sustained, count: 4, color: steelblue}
+        - {name: onset,     count: 2, color: crimson}
+        - {name: phase,     count: 1, color: darkorange}
 
     # hidden:
     #   spike_raster:       true

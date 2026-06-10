@@ -34,16 +34,24 @@ def auditory_frontend(
     num_filters=100,
     f_min=50,
     alpha=1.0,
-    normalization="global",
-    gamma=0.5,
+    norm_percentile=99.0,
+    clip_val=1.0,
+    per_channel=False,
     eps=1e-6,
 ):
     """
     Encode an audio waveform into auditory-inspired spike features.
 
     This function implements a biologically inspired auditory pipeline:
-    waveform → gammatone filterbank → inner hair cell compression →
-    onset detection → phase signal → normalization.
+    waveform → gammatone filterbank → upstream percentile normalization →
+    inner hair cell compression → onset detection → phase signal.
+
+    Normalization is applied **once, upstream** to the (signed) filterbank output,
+    before any nonlinearity. Because `log1p(alpha * x)` is not scale-invariant, the
+    signal must be brought to a known scale *before* the log so compression is
+    consistent across utterances. E, dE and phase are then all derived from the same
+    normalized signal — their relative balance is therefore set only by the downstream
+    gains, not by independent per-feature normalizations.
 
     Parameters
     ----------
@@ -61,20 +69,22 @@ def auditory_frontend(
 
     alpha : float, default=1.0
         Compression strength for inner hair cell log compression:
-        E = log(1 + alpha * max(signal, 0)).
+        E = log1p(alpha * |signal_norm|).
 
-    normalization : str, default="global"
-        Normalization strategy for compressed energy.
-        Options:
-        - "global": divide by global max amplitude
-        - "rms": per-channel RMS normalization
-        - None: no normalization
+    norm_percentile : float, default=99.0
+        Percentile of |filterbank output| used as the normalization scale. Robust to
+        the loudest transients (top 1% at 99) compared to a plain max.
 
-    gamma : float, default=0.3
-        Power law exponent applied to E after normalization.
-        Compresses dynamic range across channels while preserving relative dominance.
-        Values < 1 boost weak channels without flattening strong ones (e.g. 0.3 turns
-        a 100x ratio into ~4x). Set to 1.0 to disable.
+    clip_val : float, default=1.0
+        After dividing by the percentile scale, the normalized signal is clipped to
+        [-clip_val, clip_val]. This bounds the input to the log and saturates the
+        loudest excursions.
+
+    per_channel : bool, default=False
+        If False (default), one global percentile scalar is computed over the whole
+        (n_channels, T) magnitude array — this preserves cross-channel relative energy
+        (formant/timbre structure useful for speaker discrimination). If True, the
+        percentile is computed per channel, equalizing quiet and loud bands.
 
     eps : float, default=1e-6
         Small constant to avoid division by zero.
@@ -85,13 +95,14 @@ def auditory_frontend(
         Dictionary containing encoded auditory representations:
 
         - "E" : np.ndarray (n_channels, T)
-            Log-compressed cochlear energy (IHC output)
+            Log-compressed cochlear energy (IHC output), full-wave rectified.
 
         - "dE" : np.ndarray (n_channels, T)
-            Onset detection signal (half-wave rectified temporal derivative)
+            Onset detection signal (half-wave rectified temporal derivative of E).
 
         - "phase" : np.ndarray (n_channels, T)
-            Half-wave rectified filterbank output representing phase locking
+            Negative half-wave of the normalized filterbank output. Complementary in
+            polarity to E's full-wave energy, so it is not redundant with E.
 
         - "cf" : np.ndarray (n_channels,)
             Center frequencies of filterbank channels (low → high)
@@ -105,11 +116,10 @@ def auditory_frontend(
 
     1. Audio loading
     2. ERB-spaced gammatone filterbank
-    3. Half-wave rectification
-    4. Inner hair cell log compression
-    5. Onset detection via positive temporal derivative
-    6. Phase signal extraction
-    7. Optional normalization
+    3. Upstream percentile normalization + clip (on the signed signal)
+    4. Inner hair cell log compression (full-wave): E = log1p(alpha * |sig_norm|)
+    5. Onset detection via positive temporal derivative of E
+    6. Phase signal: negative half-wave of sig_norm
 
     All channel outputs are ordered from **low → high frequency**.
     """
@@ -135,46 +145,33 @@ def auditory_frontend(
     n_channels, T = signals.shape
 
     # ==============================
-    # 3. Inner Hair Cell Compression
+    # 3. Upstream percentile normalization (on the signed signal, before any
+    #    nonlinearity). One scale derived from |signals|, then clip. This keeps
+    #    the log compression in a consistent regime across utterances and puts
+    #    E / dE / phase on a single shared reference frame.
     # ==============================
-    E = np.log1p(alpha * np.maximum(signals, 0))
+    if per_channel:
+        scale = np.percentile(np.abs(signals), norm_percentile, axis=1, keepdims=True)
+    else:
+        scale = np.percentile(np.abs(signals), norm_percentile)
+    sig_n = np.clip(signals / (scale + eps), -clip_val, clip_val)
 
     # ==============================
-    # 4. Onset detection
+    # 4. Inner Hair Cell Compression (full-wave)
+    # ==============================
+    E = np.log1p(alpha * np.abs(sig_n))
+
+    # ==============================
+    # 5. Onset detection (positive temporal derivative of E)
     # ==============================
     dE = np.diff(E, axis=1, prepend=E[:, :1])
     dE[dE < 0] = 0
-    # Normalize to [0, 1]
-    dE_max = np.max(dE) + eps
-    dE = dE / dE_max
 
     # ==============================
-    # 5. Phase signal
+    # 6. Phase signal: negative half-wave of the normalized signal.
+    #    Complementary in polarity to E's full-wave energy → not redundant with E.
     # ==============================
-    phase_signal = np.maximum(signals, 0)
-    # Normalize to [0, 1]
-    phase_max = np.max(phase_signal) + eps
-    phase_signal = phase_signal / phase_max
-
-    # ==============================
-    # 6. Normalization
-    # ==============================
-    if normalization == "global":
-        max_val = np.max(np.abs(E)) + eps
-        E = E / max_val
-
-    elif normalization == "rms": #TODO: consider remove this, likely useless in the future
-        rms = np.sqrt(np.mean(E**2, axis=1, keepdims=True)) + eps
-        E = E / rms
-
-    elif normalization is None:
-        pass
-
-    else:
-        raise ValueError("normalization must be {'global', 'rms', None}")
-
-    if gamma != 1.0:
-        E = np.power(E, gamma)
+    phase_signal = np.maximum(-sig_n, 0)
 
     return {
         "E": E,

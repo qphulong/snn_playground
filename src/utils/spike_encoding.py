@@ -15,6 +15,9 @@ def compute_spike_input_current(
     audio_sample_rate=16000,
     simulation_sample_rate=1000,
     num_filters=100,
+    norm_percentile=99.0,
+    clip_val=1.0,
+    per_channel=False,
 ):
     """
     Convert an audio file into a downsampled input current matrix for a spiking neural network.
@@ -81,6 +84,16 @@ def compute_spike_input_current(
         The current matrix is downsampled from `audio_sample_rate` to this rate by
         block-averaging. Must evenly divide `audio_sample_rate`.
 
+    norm_percentile : float, default=99.0
+        Percentile used by `auditory_frontend` to normalize the filterbank output
+        before the log nonlinearity.
+
+    clip_val : float, default=1.0
+        Clip bound applied to the normalized filterbank signal in `auditory_frontend`.
+
+    per_channel : bool, default=False
+        If True, `auditory_frontend` normalizes per channel instead of globally.
+
     Returns
     -------
     I_sim : np.ndarray, shape (N_in, T_sim)
@@ -92,7 +105,13 @@ def compute_spike_input_current(
         total simulation duration in Brian2 timesteps.
     """
 
-    feats = auditory_frontend(audio_path, num_filters=num_filters)
+    feats = auditory_frontend(
+        audio_path,
+        num_filters=num_filters,
+        norm_percentile=norm_percentile,
+        clip_val=clip_val,
+        per_channel=per_channel,
+    )
 
     E = feats["E"]
     dE = feats["dE"]

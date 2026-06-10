@@ -16,17 +16,41 @@ start = time.time()
 # ============================================================
 # Dataset
 # ============================================================
-# TODO: set the path
 wav_files = [
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00002/00002.wav",
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00006/00004.wav",
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00009/00005.wav",
-    "datasets/vox1_cleaned/wav_dev/id10022/id10022_00017/00003.wav"
-    
+    "datasets/vox1_cleaned/wav_dev/id11181/id11181_00012/00004.wav",
+    "datasets/vox1_cleaned/wav_dev/id11165/id11165_00009/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10341/id10341_00018/00042.wav",
+    "datasets/vox1_cleaned/wav_dev/id11204/id11204_00005/00005.wav",
+    "datasets/vox1_cleaned/wav_dev/id11049/id11049_00013/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10419/id10419_00015/00003.wav",
+    "datasets/vox1_cleaned/wav_dev/id10125/id10125_00011/00011.wav",
+    "datasets/vox1_cleaned/wav_dev/id10005/id10005_00008/00003.wav",
+    "datasets/vox1_cleaned/wav_dev/id10563/id10563_00018/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10863/id10863_00002/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id11010/id11010_00008/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10130/id10130_00004/00006.wav",
+    "datasets/vox1_cleaned/wav_dev/id10318/id10318_00002/00003.wav",
+    "datasets/vox1_cleaned/wav_dev/id11107/id11107_00015/00002.wav",
+    "datasets/vox1_cleaned/wav_dev/id11210/id11210_00018/00004.wav",
+    "datasets/vox1_cleaned/wav_dev/id10952/id10952_00009/00008.wav",
+    "datasets/vox1_cleaned/wav_dev/id10720/id10720_00019/00012.wav",
+    "datasets/vox1_cleaned/wav_dev/id10983/id10983_00005/00092.wav",
+    "datasets/vox1_cleaned/wav_dev/id11087/id11087_00009/00007.wav",
+    "datasets/vox1_cleaned/wav_dev/id11172/id11172_00007/00075.wav",
+    "datasets/vox1_cleaned/wav_dev/id10330/id10330_00003/00006.wav",
+    "datasets/vox1_cleaned/wav_dev/id10891/id10891_00005/00002.wav",
+    "datasets/vox1_cleaned/wav_dev/id11237/id11237_00009/00012.wav",
+    "datasets/vox1_cleaned/wav_dev/id10062/id10062_00011/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10799/id10799_00011/00013.wav",
+    "datasets/vox1_cleaned/wav_dev/id11230/id11230_00030/00007.wav",
+    "datasets/vox1_cleaned/wav_dev/id10204/id10204_00008/00008.wav",
+    "datasets/vox1_cleaned/wav_dev/id11082/id11082_00006/00013.wav",
+    "datasets/vox1_cleaned/wav_dev/id10715/id10715_00020/00027.wav",
+    "datasets/vox1_cleaned/wav_dev/id10834/id10834_00018/00011.wav",
 ]
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 4
+EPOCHS   = 1
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -203,13 +227,16 @@ for epoch_idx in range(EPOCHS):
         try:
             I, T = compute_spike_input_current(
                 audio_path,
-                scale=0.8,
+                scale=1.0,
                 num_filters=96,
                 sustained_per_band=4,
                 onset_per_band=2,
                 phase_per_band=1,
+                sust_gain=0.3,
+                onset_gain=2.25,
+                phase_gain=0.45,
                 sust_spread_min=0.7,
-                sust_spread_max=1.3,
+                sust_spread_max=1.0,
             )
         except Exception as e:
             print(f"    Error encoding audio: {e}")
