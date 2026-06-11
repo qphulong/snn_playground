@@ -16,19 +16,19 @@ start = time.time()
 # Dataset
 # ============================================================
 # wav_files = [
-#     "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00003.wav",
+#     # "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00003.wav",
 #     "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00004.wav"
 # ]
 
-wav_files = [
-    # "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
-    "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
-]
-
 # wav_files = [
-#     # "datasets/slicing_window_analysis/sample1/slice_00010.wav",
-#     "datasets/slicing_window_analysis/sample1/slice_00011.wav",
+#     # "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
+#     # "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
 # ]
+
+wav_files = [
+    # "datasets/slicing_window_analysis/sample1/slice_00010.wav",
+    "datasets/slicing_window_analysis/sample1/slice_00011.wav",
+]
 
 print(f"Found {len(wav_files)} wav files")
 
@@ -84,11 +84,13 @@ W_INH_MIN    = 0.0
 APRE_INH     = 0.0005
 APOST_INH    = -0.0006
 
-# -- Tonotopic plasticity (polynomial decay: max(0, 1-(d/R)^p)) --
-R_EXC = 128
-p_EXC = 3
-R_INH = 7
-p_INH = 10000
+# -- Channel layout --
+N_CHANNELS    = 96
+N_PER_CHANNEL = N_IN // N_CHANNELS   # 7
+
+# -- Tonotopic plasticity (polynomial decay: max(0, 1-(d_channel/R)^p)) --
+R_EXC_CHANNEL = 16
+p_EXC         = 3
 
 # -- Homeostatic normalisation --
 NORM_LIMIT_EXC = 2
@@ -97,39 +99,53 @@ NORM_LIMIT_INH = 0.9
 
 # ============================================================
 # Pre-compute tonotopic plasticity matrices — excitatory
-# topo(d) = max(0, 1-(d/R)^p); hard cutoff at d=R_EXC.
+# Distance is measured in channels: d_ch = |ch_i - ch_j| (circular on N_CHANNELS).
+# topo(d_ch) = max(0, 1-(d_ch/R_EXC_CHANNEL)^p); hard cutoff at d_ch=R_EXC_CHANNEL.
 # ============================================================
 
-_i       = np.arange(N_IN).reshape(-1, 1)
-_j       = np.arange(N_H).reshape(1, -1)
-_dist_ih = np.abs(_i - _j)
-_dist_ih = np.minimum(_dist_ih, N_IN - _dist_ih)
-_topo_exc = np.maximum(0.0, 1.0 - (_dist_ih / R_EXC) ** p_EXC)
-_mask_ih  = _dist_ih <= R_EXC
+_ch_i    = (np.arange(N_IN) // N_PER_CHANNEL).reshape(-1, 1)   # (N_IN, 1)
+_ch_j    = (np.arange(N_H)  // N_PER_CHANNEL).reshape(1, -1)   # (1, N_H)
+_dist_ch = np.abs(_ch_i - _ch_j)
+_dist_ch = np.minimum(_dist_ch, N_CHANNELS - _dist_ch)          # circular
+_topo_exc = np.maximum(0.0, 1.0 - (_dist_ch / R_EXC_CHANNEL) ** p_EXC)
+_mask_ih  = _dist_ch <= R_EXC_CHANNEL
 _src_ih, _tgt_ih = np.where(_mask_ih)
 
 wmax_matrix  = WMAX_CENTER  * _topo_exc
 Apre_matrix  = APRE_CENTER  * _topo_exc
 Apost_matrix = APOST_CENTER * _topo_exc
-del _i, _j, _dist_ih, _topo_exc
+del _ch_i, _ch_j, _dist_ch, _topo_exc
 
 # ============================================================
-# Pre-compute tonotopic plasticity matrices — inhibitory
-# Same formula; no self-connections (d > 0); hard cutoff at d=R_INH.
+# Pre-compute inhibitory plasticity matrices — Jaccard similarity.
+# Two hidden neurons inhibit each other iff their excitatory input sets overlap
+# (i.e., they share at least one input neuron). wmax/Apre/Apost scale by Jaccard.
+#
+# Since every hidden neuron j receives from a window of (2*R_EXC_CHANNEL+1) channels
+# centred on j//N_PER_CHANNEL (circular), the Jaccard of neurons h1, h2 simplifies to:
+#   jaccard = overlap_channels / (window_size + d_ch_hh)
+# where overlap_channels = max(0, window_size - d_ch_hh).
+# No self-connections.
 # ============================================================
 
-_i_hh    = np.arange(N_H).reshape(-1, 1)
-_j_hh    = np.arange(N_H).reshape(1, -1)
-_dist_hh = np.abs(_i_hh - _j_hh)
-_dist_hh = np.minimum(_dist_hh, N_H - _dist_hh)
-_topo_inh = np.maximum(0.0, 1.0 - (_dist_hh / R_INH) ** p_INH)
-_mask_hh  = (_dist_hh > 0) & (_dist_hh <= R_INH)
+_ch_h       = np.arange(N_H) // N_PER_CHANNEL
+_dist_ch_hh = np.abs(_ch_h.reshape(-1, 1) - _ch_h.reshape(1, -1))
+_dist_ch_hh = np.minimum(_dist_ch_hh, N_CHANNELS - _dist_ch_hh)   # circular
+
+_window_size = 2 * R_EXC_CHANNEL + 1                               # 17
+_overlap_ch  = np.maximum(0, _window_size - _dist_ch_hh)
+_jaccard     = np.where(
+    _overlap_ch > 0,
+    _overlap_ch / (_window_size + _dist_ch_hh),
+    0.0,
+)
+_mask_hh  = (_overlap_ch > 0) & (~np.eye(N_H, dtype=bool))
 _src_hh, _tgt_hh = np.where(_mask_hh)
 
-wmax_inh_matrix  = W_INH_CENTER * _topo_inh
-Apre_inh_matrix  = APRE_INH     * _topo_inh
-Apost_inh_matrix = APOST_INH    * _topo_inh
-del _i_hh, _j_hh, _dist_hh, _topo_inh
+wmax_inh_matrix  = W_INH_CENTER * _jaccard
+Apre_inh_matrix  = APRE_INH     * _jaccard
+Apost_inh_matrix = APOST_INH    * _jaccard
+del _ch_h, _dist_ch_hh, _overlap_ch, _jaccard
 
 # ============================================================
 # Initialise weight matrices
@@ -302,6 +318,10 @@ wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
 @network_operation(dt=500*ms, when='end')
 def normalize_weights():
+    # exc_sums = np.array([np.array(S_ih.w[tgt_masks_ih[j]]).sum() for j in range(N_H)])
+    # inh_sums = np.array([np.array(S_hh.w_inh[tgt_masks_hh[j]]).sum() for j in range(N_H)])
+    # print(f"  [norm t={defaultclock.t/ms:.0f}ms] exc col-sum: min={exc_sums.min():.4f} mean={exc_sums.mean():.4f} max={exc_sums.max():.4f} | "
+    #       f"inh col-sum: min={inh_sums.min():.4f} mean={inh_sums.mean():.4f} max={inh_sums.max():.4f}")
     for j in range(N_H):
         idx   = tgt_masks_ih[j]
         w_col = np.array(S_ih.w[idx])
@@ -343,7 +363,7 @@ for epoch_idx in range(EPOCHS):
         try:
             I, T = compute_spike_input_current(
                 audio_path,
-                scale=1,
+                scale=1.0,
                 num_filters=96,
                 sustained_per_band=4,
                 onset_per_band=2,
