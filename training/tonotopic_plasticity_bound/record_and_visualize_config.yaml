@@ -45,7 +45,7 @@ record:
 visualize:
 
   visualize_samples: [0, 1,2,3,4]
-  visualize_epoch:   [0, 1]
+  visualize_epoch:   [3]
 
   track_weight_delta: false
 

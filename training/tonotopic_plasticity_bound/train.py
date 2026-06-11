@@ -20,19 +20,19 @@ start = time.time()
 #     "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00004.wav"
 # ]
 
-# wav_files = [
-#     "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
-#     "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
-# ]
-
 wav_files = [
-    "datasets/slicing_window_analysis/sample1/slice_00010.wav",
-    "datasets/slicing_window_analysis/sample1/slice_00011.wav",
+    # "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
+    "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
 ]
+
+# wav_files = [
+#     # "datasets/slicing_window_analysis/sample1/slice_00010.wav",
+#     "datasets/slicing_window_analysis/sample1/slice_00011.wav",
+# ]
 
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 2
+EPOCHS   = 4
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -343,13 +343,16 @@ for epoch_idx in range(EPOCHS):
         try:
             I, T = compute_spike_input_current(
                 audio_path,
-                scale=0.8,
+                scale=1,
                 num_filters=96,
                 sustained_per_band=4,
                 onset_per_band=2,
                 phase_per_band=1,
+                sust_gain=0.3,
+                onset_gain=2.25,
+                phase_gain=0.45,
                 sust_spread_min=0.7,
-                sust_spread_max=1.3,
+                sust_spread_max=1.0,
             )
         except Exception as e:
             print(f"    Error encoding audio: {e}")
