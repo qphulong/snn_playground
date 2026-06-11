@@ -1,171 +1,137 @@
 """
-Prepare datasets/vox1_100person_fingerprint from datasets/vox1_cleaned/wav_dev.
+prepare_dataset.py
+==================
+Generate a YAML manifest of which wav files to include for fingerprint training —
+WITHOUT copying any audio.  The fingerprint generator reads paths from this manifest
+and loads audio in place from datasets/vox1_cleaned/.
 
-Selects N_PERSONS random speakers that each have enough qualifying records:
-  - n_shared records with >= n_dev_samples + n_test_samples wavs
-      -> wav_dev gets files [0 : n_dev_samples]
-      -> wav_test gets files [n_dev_samples : n_dev_samples + n_test_samples]
-  - (n_dev_records - n_shared) dev-only records with >= n_dev_samples wavs
-      -> wav_dev gets files [0 : n_dev_samples]
-  - n_test_only_records records (not in dev) with >= n_test_samples wavs
-      -> wav_test gets files [0 : n_test_samples]
+Split (open-set: dev and test speaker sets are disjoint, separate source dirs):
+  dev  : N_DEV_PERSONS  random qualifying persons from wav_dev
+           qualifying = >= dev_records sessions each with >= dev_samples wavs
+           per person  = dev_records sessions x dev_samples wavs
+  test : N_TEST_PERSONS random qualifying persons from wav_test
+           qualifying = >= test_records sessions each with >= test_samples wavs
+           per person  = test_records sessions x test_samples wavs
 
-Default target:
-  dev  : 100 people x 4 records x 8 samples
-  test : 100 people x 4 records x 2 samples
-           (2 records shared with dev using next 2 files, 2 records test-only)
+Persons that don't qualify are skipped (we keep drawing until the target count is met).
+Person selection is randomised (seeded); within a person, the first qualifying records
+(sorted) and the first wavs (sorted) in each are taken, so output is deterministic per seed.
+
+Output: training/be_ann_w_fingerprints/dataset_manifest.yaml
+  dataset_root, seed, and per-split {wav_subdir, n_persons, records_per_person,
+  samples_per_record, persons: {person_id: {record_id: [wav, ...]}}}.
+  Reconstruct a path as: {dataset_root}/{wav_subdir}/{person_id}/{record_id}/{wav}
+
+Usage:
+  cd <repo_root>
+  python training/be_ann_w_fingerprints/prepare_dataset.py
 """
 
 import argparse
+import os
 import random
-import shutil
 from pathlib import Path
+
+import yaml
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--src", default="datasets/vox1_cleaned/wav_dev")
-    p.add_argument("--dst", default="datasets/vox1_100person_fingerprint")
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--dataset-root", default="datasets/vox1_cleaned")
+    p.add_argument("--dev-subdir",  default="wav_dev")
+    p.add_argument("--test-subdir", default="wav_test")
+    p.add_argument("--out", default="training/be_ann_w_fingerprints/dataset_manifest.yaml")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--n-persons", type=int, default=100)
-    p.add_argument("--n-dev-records", type=int, default=4,
-                   help="Total records per person in dev")
-    p.add_argument("--n-dev-samples", type=int, default=8,
-                   help="Wav files per dev record")
-    p.add_argument("--n-shared", type=int, default=2,
-                   help="Dev records that also appear in test (files after dev samples)")
-    p.add_argument("--n-test-only-records", type=int, default=2,
-                   help="Additional test-only records per person (not in dev)")
-    p.add_argument("--n-test-samples", type=int, default=2,
-                   help="Wav files per test record (shared and test-only)")
+    p.add_argument("--n-dev-persons",  type=int, default=600)
+    p.add_argument("--dev-records",    type=int, default=4, help="sessions per dev person")
+    p.add_argument("--dev-samples",    type=int, default=8, help="wavs per dev session")
+    p.add_argument("--n-test-persons", type=int, default=20)
+    p.add_argument("--test-records",   type=int, default=4, help="sessions per test person")
+    p.add_argument("--test-samples",   type=int, default=4, help="wavs per test session")
     return p.parse_args()
 
 
-def find_records_for_speaker(speaker_dir, n_dev, n_dev_samples, n_shared,
-                              n_test_samples, n_test_only):
-    """Return (shared, dev_only, test_only) or None if speaker doesn't qualify.
+def select_person_records(person_dir, n_records, n_samples):
+    """Return {record_id: [wav, ...]} for the first n_records sessions that each have
+    >= n_samples wavs (first n_samples wavs taken, sorted), or None if too few qualify."""
+    selected = {}
+    for record_dir in sorted(d for d in person_dir.iterdir() if d.is_dir()):
+        wavs = sorted(f.name for f in record_dir.glob("*.wav"))
+        if len(wavs) >= n_samples:
+            selected[record_dir.name] = wavs[:n_samples]
+        if len(selected) == n_records:
+            return selected
+    return None
 
-    shared    -- first n_shared records with >= n_dev_samples + n_test_samples wavs
-    dev_only  -- next (n_dev - n_shared) records with >= n_dev_samples wavs
-    test_only -- next n_test_only records (not in dev) with >= n_test_samples wavs
+
+def build_split(src_dir, n_persons, n_records, n_samples, rng):
+    """Randomly draw qualifying persons until n_persons collected.
+
+    Returns {person_id: {record_id: [wav, ...]}}.
     """
-    all_records = [
-        (d, sorted(d.glob("*.wav")))
-        for d in sorted(speaker_dir.iterdir()) if d.is_dir()
-    ]
-    used = set()
-    shared, dev_only, test_only = [], [], []
+    persons = sorted(d for d in src_dir.iterdir() if d.is_dir())
+    rng.shuffle(persons)
 
-    for utt_dir, wavs in all_records:
-        if len(shared) == n_shared:
+    split = {}
+    for person_dir in persons:
+        recs = select_person_records(person_dir, n_records, n_samples)
+        if recs is not None:
+            split[person_dir.name] = recs
+        if len(split) == n_persons:
             break
-        if len(wavs) >= n_dev_samples + n_test_samples:
-            shared.append((utt_dir, wavs))
-            used.add(utt_dir)
 
-    if len(shared) < n_shared:
-        return None
-
-    n_dev_only = n_dev - n_shared
-    for utt_dir, wavs in all_records:
-        if utt_dir in used:
-            continue
-        if len(dev_only) == n_dev_only:
-            break
-        if len(wavs) >= n_dev_samples:
-            dev_only.append((utt_dir, wavs))
-            used.add(utt_dir)
-
-    if len(dev_only) < n_dev_only:
-        return None
-
-    for utt_dir, wavs in all_records:
-        if utt_dir in used:
-            continue
-        if len(test_only) == n_test_only:
-            break
-        if len(wavs) >= n_test_samples:
-            test_only.append((utt_dir, wavs))
-            used.add(utt_dir)
-
-    if len(test_only) < n_test_only:
-        return None
-
-    return shared, dev_only, test_only
-
-
-def copy_files(wavs, dst_dir):
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    for f in wavs:
-        shutil.copy2(f, dst_dir / f.name)
+    if len(split) < n_persons:
+        raise RuntimeError(
+            f"Only {len(split)} qualifying persons in {src_dir} "
+            f"(need {n_persons}; rule = >={n_records} records each with >={n_samples} wavs)."
+        )
+    return split
 
 
 def main():
     args = parse_args()
-    src = Path(args.src)
-    dst = Path(args.dst)
+    root = Path(args.dataset_root)
+    rng  = random.Random(args.seed)
 
-    speakers = [d for d in src.iterdir() if d.is_dir()]
-    rng = random.Random(args.seed)
-    rng.shuffle(speakers)
+    dev = build_split(root / args.dev_subdir,
+                      args.n_dev_persons, args.dev_records, args.dev_samples, rng)
+    test = build_split(root / args.test_subdir,
+                       args.n_test_persons, args.test_records, args.test_samples, rng)
 
-    accepted = []
-    for spk in speakers:
-        result = find_records_for_speaker(
-            spk,
-            n_dev=args.n_dev_records,
-            n_dev_samples=args.n_dev_samples,
-            n_shared=args.n_shared,
-            n_test_samples=args.n_test_samples,
-            n_test_only=args.n_test_only_records,
-        )
-        if result is not None:
-            accepted.append((spk, result))
-        if len(accepted) == args.n_persons:
-            break
+    manifest = {
+        "dataset_root": args.dataset_root,
+        "seed": args.seed,
+        "dev": {
+            "wav_subdir": args.dev_subdir,
+            "n_persons": args.n_dev_persons,
+            "records_per_person": args.dev_records,
+            "samples_per_record": args.dev_samples,
+            "persons": dev,
+        },
+        "test": {
+            "wav_subdir": args.test_subdir,
+            "n_persons": args.n_test_persons,
+            "records_per_person": args.test_records,
+            "samples_per_record": args.test_samples,
+            "persons": test,
+        },
+    }
 
-    if len(accepted) < args.n_persons:
-        raise RuntimeError(
-            f"Only found {len(accepted)} qualifying speakers (need {args.n_persons}). "
-            "Try lowering requirements."
-        )
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        yaml.safe_dump(manifest, f, sort_keys=False, default_flow_style=False)
 
-    header = (f"{'Speaker':<14} {'Shared':>6} {'DevOnly':>7} {'TestOnly':>8} "
-              f"{'DevFiles':>8} {'TestFiles':>9}")
-    print(header)
-    print("-" * len(header))
+    def _count(split):
+        return sum(len(wavs) for recs in split.values() for wavs in recs.values())
 
-    for spk_dir, (shared, dev_only, test_only) in accepted:
-        total_dev = total_test = 0
-
-        for utt_dir, wavs in shared:
-            dev_wavs  = wavs[:args.n_dev_samples]
-            test_wavs = wavs[args.n_dev_samples:args.n_dev_samples + args.n_test_samples]
-            copy_files(dev_wavs,  dst / "wav_dev"  / spk_dir.name / utt_dir.name)
-            copy_files(test_wavs, dst / "wav_test" / spk_dir.name / utt_dir.name)
-            total_dev  += len(dev_wavs)
-            total_test += len(test_wavs)
-
-        for utt_dir, wavs in dev_only:
-            dev_wavs = wavs[:args.n_dev_samples]
-            copy_files(dev_wavs, dst / "wav_dev" / spk_dir.name / utt_dir.name)
-            total_dev += len(dev_wavs)
-
-        for utt_dir, wavs in test_only:
-            test_wavs = wavs[:args.n_test_samples]
-            copy_files(test_wavs, dst / "wav_test" / spk_dir.name / utt_dir.name)
-            total_test += len(test_wavs)
-
-        print(f"{spk_dir.name:<14} {len(shared):>6} {len(dev_only):>7} {len(test_only):>8} "
-              f"{total_dev:>8} {total_test:>9}")
-
-    print(f"\nDone. Dataset written to: {dst.resolve()}")
-    print(f"  Persons : {len(accepted)}")
-    print(f"  Dev     : {len(accepted)} persons x "
-          f"{args.n_dev_records} records x {args.n_dev_samples} samples")
-    print(f"  Test    : {len(accepted)} persons x "
-          f"{args.n_shared + args.n_test_only_records} records x {args.n_test_samples} samples "
-          f"({args.n_shared} shared, {args.n_test_only_records} test-only)")
+    print(f"Wrote manifest → {out_path}")
+    print(f"  dev  : {len(dev):>3} persons x {args.dev_records} records x "
+          f"{args.dev_samples} wavs = {_count(dev)} samples")
+    print(f"  test : {len(test):>3} persons x {args.test_records} records x "
+          f"{args.test_samples} wavs = {_count(test)} samples")
+    print(f"  total samples: {_count(dev) + _count(test)}")
 
 
 if __name__ == "__main__":
