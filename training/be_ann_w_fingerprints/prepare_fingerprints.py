@@ -1,56 +1,49 @@
 """
 prepare_fingerprints.py
 =======================
-Trains an independent SNN run per wav file using the
-tonotopic_plasticity_bound architecture.  Produces two output files:
+Manifest-driven fingerprint generator for the new architecture (channel-distance
+tonotopic excitation + Jaccard-overlap lateral inhibition).  Same network, hyperparameters
+and snapshot mechanism as prepare_fingerprints_dummy.py, scaled to every wav listed in
+dataset_manifest.yaml, with crash-proof checkpoint/resume.
 
-  training/be_ann_w_fingerprints/dev_fingerprints.npz
-  training/be_ann_w_fingerprints/test_fingerprints.npz
+Pipeline per wav:
+  fresh SNN run (NUM_EPOCHS, 500 ms snapshots in the final epoch, fingerprint = mean of
+  snapshots) → (672, 672) excitatory matrix → transform → (2, 7, 33, 672) tensor (float16).
 
-Dataset layout expected (output of prepare_dataset.py):
-  datasets/vox1_10person_fingerprint/
-    wav_dev/<person_id>/<record_id>/00001.wav … 00008.wav
-    wav_test/<person_id>/<record_id>/00009.wav 00010.wav
+Tensor axes ((672,672) excitatory matrix → (2, 7, 33, 672)):
+  axis 0 (2)   norm channel: 0 = raw weight, 1 = z-scored per hidden column
+  axis 1 (7)   within-channel input-neuron type (4 sustained, 2 onset, 1 phase)
+  axis 2 (33)  channel offset -16..+16 (full connectivity window; +-16 are zero borders)
+  axis 3 (672) hidden neuron j; ch_j = j // 7, in_idx = ((ch_j+o) % 96)*7 + t
 
-Each wav file yields one fingerprint (fresh network weights per file).
-Training: NUM_EPOCHS=4 per wav file.  Snapshots collected after each epoch
-where epoch_idx >= COLLECT_FROM_EPOCH_IDX (0-indexed), i.e. epochs 3 & 4
-(1-indexed).  The fingerprint is the mean of collected snapshots.
+Input:
+  training/be_ann_w_fingerprints/dataset_manifest.yaml
 
-ADDED — rate vectors (recorded in the SAME pass, paired to each fingerprint):
-  Two SpikeMonitor counters tally per-neuron spikes during the collection
-  epochs (the same epochs the fingerprint averages).  These give two baseline
-  representations for the three-way linear-probe comparison:
-    input_rates   per-input-neuron firing rate  (Hz)  shape (N_IN,)  = (672,)
-    hidden_rates  per-hidden-neuron firing rate (Hz)  shape (N_H,)   = (672,)
-  Because they are captured in the same run that produces the fingerprint, they
-  are paired to the exact same network instantiation (same noise draw) — no
-  separate re-run, and the trained inhibition is the real one, not a re-init.
-
-Output arrays (per npz):
-  fingerprints  (N, 672, 672)  float32
-  input_rates   (N, 672)       float32   (Hz)
-  hidden_rates  (N, 672)       float32   (Hz)
-  person_ids    (N,)           str
-  record_ids    (N,)           str
-  labels        (N,)           str       person/record/file (for robust pairing)
+Output (one npz per split, in this script's dir):
+  dev_fingerprints.npz / test_fingerprints.npz
+    fingerprints (N, 2, 7, 33, 672)  float16
+    person_ids   (N,)                str
+    record_ids   (N,)                str
+    labels       (N,)                str   = person/record/wav
 
 Usage:
   cd <repo_root>
-  python3 training/be_ann_w_fingerprints/prepare_fingerprints.py
+  python training/be_ann_w_fingerprints/prepare_fingerprints.py            # full run
+  python training/be_ann_w_fingerprints/prepare_fingerprints.py --warmup   # 1 wav/split
 """
 
 import argparse
-import tempfile
-import numpy as np
-np.random.seed(42)
 import os
 import sys
 import time
 
+import numpy as np
+np.random.seed(42)
+import yaml
+
 from brian2 import (
     NeuronGroup, Synapses, TimedArray, Network, network_operation,
-    SpikeMonitor, defaultclock, ms, second,
+    defaultclock, ms, second,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,12 +61,12 @@ args = _ap.parse_args()
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
 
-DATASET_ROOT  = os.path.join(REPO_ROOT, 'datasets', 'vox1_100person_fingerprint')
+MANIFEST_PATH = os.path.join(SCRIPT_DIR, 'dataset_manifest.yaml')
 OUT_DEV_PATH  = os.path.join(SCRIPT_DIR, 'dev_fingerprints.npz')
 OUT_TEST_PATH = os.path.join(SCRIPT_DIR, 'test_fingerprints.npz')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Hyperparameters
+# Hyperparameters  (match prepare_fingerprints_dummy.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
 N_IN = 672   # 96 channels × 7 neurons/channel
@@ -119,84 +112,97 @@ W_INH_MIN    = 0.0
 APRE_INH     = 0.0005
 APOST_INH    = -0.0006
 
-# -- Tonotopic plasticity (polynomial decay: max(0, 1-(d/R)^p)) --
-R_EXC = 128
-p_EXC = 3
-R_INH = 7
-p_INH = 10000
+# -- Channel layout --
+N_CHANNELS    = 96
+N_PER_CHANNEL = N_IN // N_CHANNELS   # 7
+
+# -- Tonotopic plasticity (polynomial decay: max(0, 1-(d_channel/R)^p)) --
+R_EXC_CHANNEL = 16
+p_EXC         = 3
 
 # -- Homeostatic normalisation --
 NORM_LIMIT_EXC = 2
 NORM_LIMIT_INH = 0.9
 
 # -- Fingerprint collection --
-NUM_EPOCHS             = 4
-COLLECT_FROM_EPOCH_IDX = 2   # 0-indexed: collect after epoch 2 and 3 (epochs 3&4, 1-indexed)
+NUM_EPOCHS         = 2
+SNAPSHOT_FROM_EPOCH = 1   # collect snapshots from this epoch onward (0-indexed)
+
+# -- Tensor transform (fingerprint (672,672) -> (2, 7, 33, 672)) --
+OFFSETS      = np.arange(-R_EXC_CHANNEL, R_EXC_CHANNEL + 1)   # -16..+16  (33 values)
+TENSOR_SHAPE = (2, N_PER_CHANNEL, len(OFFSETS), N_H)         # (2, 7, 33, 672)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-compute tonotopic plasticity matrices — excitatory
-# topo(d) = max(0, 1-(d/R)^p); hard cutoff at d=R_EXC.
+# Distance is measured in channels: d_ch = |ch_i - ch_j| (circular on N_CHANNELS).
+# topo(d_ch) = max(0, 1-(d_ch/R_EXC_CHANNEL)^p); hard cutoff at d_ch=R_EXC_CHANNEL.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_i       = np.arange(N_IN).reshape(-1, 1)
-_j       = np.arange(N_H).reshape(1, -1)
-_dist_ih = np.abs(_i - _j)
-_dist_ih = np.minimum(_dist_ih, N_IN - _dist_ih)
-_topo_exc = np.maximum(0.0, 1.0 - (_dist_ih / R_EXC) ** p_EXC)
-_mask_ih  = _dist_ih <= R_EXC
+_ch_i    = (np.arange(N_IN) // N_PER_CHANNEL).reshape(-1, 1)
+_ch_j    = (np.arange(N_H)  // N_PER_CHANNEL).reshape(1, -1)
+_dist_ch = np.abs(_ch_i - _ch_j)
+_dist_ch = np.minimum(_dist_ch, N_CHANNELS - _dist_ch)
+_topo_exc = np.maximum(0.0, 1.0 - (_dist_ch / R_EXC_CHANNEL) ** p_EXC)
+_mask_ih  = _dist_ch <= R_EXC_CHANNEL
 _src_ih, _tgt_ih = np.where(_mask_ih)
 
 wmax_matrix  = WMAX_CENTER  * _topo_exc
 Apre_matrix  = APRE_CENTER  * _topo_exc
 Apost_matrix = APOST_CENTER * _topo_exc
-del _i, _j, _dist_ih, _topo_exc
+del _ch_i, _ch_j, _dist_ch, _topo_exc
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Pre-compute tonotopic plasticity matrices — inhibitory
-# Same formula; no self-connections (d > 0); hard cutoff at d=R_INH.
+# Pre-compute inhibitory plasticity matrices — Jaccard similarity.
+# Two hidden neurons inhibit each other iff their excitatory input sets overlap.
+# wmax/Apre/Apost scale by Jaccard = overlap_ch / (window_size + d_ch_hh).
+# No self-connections.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_i_hh    = np.arange(N_H).reshape(-1, 1)
-_j_hh    = np.arange(N_H).reshape(1, -1)
-_dist_hh = np.abs(_i_hh - _j_hh)
-_dist_hh = np.minimum(_dist_hh, N_H - _dist_hh)
-_topo_inh = np.maximum(0.0, 1.0 - (_dist_hh / R_INH) ** p_INH)
-_mask_hh  = (_dist_hh > 0) & (_dist_hh <= R_INH)
+_ch_h       = np.arange(N_H) // N_PER_CHANNEL
+_dist_ch_hh = np.abs(_ch_h.reshape(-1, 1) - _ch_h.reshape(1, -1))
+_dist_ch_hh = np.minimum(_dist_ch_hh, N_CHANNELS - _dist_ch_hh)
+
+_window_size = 2 * R_EXC_CHANNEL + 1
+_overlap_ch  = np.maximum(0, _window_size - _dist_ch_hh)
+_jaccard     = np.where(
+    _overlap_ch > 0,
+    _overlap_ch / (_window_size + _dist_ch_hh),
+    0.0,
+)
+_mask_hh  = (_overlap_ch > 0) & (~np.eye(N_H, dtype=bool))
 _src_hh, _tgt_hh = np.where(_mask_hh)
 
-wmax_inh_matrix  = W_INH_CENTER * _topo_inh
-Apre_inh_matrix  = APRE_INH     * _topo_inh
-Apost_inh_matrix = APOST_INH    * _topo_inh
-del _i_hh, _j_hh, _dist_hh, _topo_inh
+wmax_inh_matrix  = W_INH_CENTER * _jaccard
+Apre_inh_matrix  = APRE_INH     * _jaccard
+Apost_inh_matrix = APOST_INH    * _jaccard
+del _ch_h, _dist_ch_hh, _overlap_ch, _jaccard
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Initialise weight matrices
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Shared initial weight matrices — same for all runs
 # Excitatory: formula-shaped, column-normalised to NORM_LIMIT_EXC
-w_ih_init = np.zeros((N_IN, N_H))
-w_ih_init[_src_ih, _tgt_ih] = wmax_matrix[_src_ih, _tgt_ih]
+# Inhibitory: formula-shaped, column-normalised to NORM_LIMIT_INH
+# ─────────────────────────────────────────────────────────────────────────────
+
+W_IH_INIT = np.zeros((N_IN, N_H))
+W_IH_INIT[_src_ih, _tgt_ih] = wmax_matrix[_src_ih, _tgt_ih]
 for _j in range(N_H):
     _col_mask = (_tgt_ih == _j)
     _rows = _src_ih[_col_mask]
-    _wsum = w_ih_init[_rows, _j].sum()
+    _wsum = W_IH_INIT[_rows, _j].sum()
     if _wsum > 0:
-        w_ih_init[_rows, _j] *= NORM_LIMIT_EXC / _wsum
+        W_IH_INIT[_rows, _j] *= NORM_LIMIT_EXC / _wsum
 
-# Inhibitory: formula-shaped, column-normalised to NORM_LIMIT_INH
-w_hh_init = np.zeros((N_H, N_H))
-w_hh_init[_src_hh, _tgt_hh] = wmax_inh_matrix[_src_hh, _tgt_hh]
+W_HH_INIT = np.zeros((N_H, N_H))
+W_HH_INIT[_src_hh, _tgt_hh] = wmax_inh_matrix[_src_hh, _tgt_hh]
 for _j in range(N_H):
     _col_mask = (_tgt_hh == _j)
     _rows = _src_hh[_col_mask]
-    _wsum = w_hh_init[_rows, _j].sum()
+    _wsum = W_HH_INIT[_rows, _j].sum()
     if _wsum > 0:
-        w_hh_init[_rows, _j] *= NORM_LIMIT_INH / _wsum
-
-init_weights = {"in->hid": w_ih_init.copy(), "hid->hid": w_hh_init.copy()}
+        W_HH_INIT[_rows, _j] *= NORM_LIMIT_INH / _wsum
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Build Brian2 network (once — reused across all runs via store/restore)
+# Build Brian2 network (once — shared across all runs)
 # ─────────────────────────────────────────────────────────────────────────────
 
 defaultclock.dt = DT_SIM
@@ -271,19 +277,15 @@ S_hh.connect(i=_src_hh, j=_tgt_hh)
 S_hh.wmax_inh_syn  = wmax_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
-S_hh.w_inh         = w_hh_init[_src_hh, _tgt_hh]
+S_hh.w_inh         = W_HH_INIT[_src_hh, _tgt_hh]
 
-# ── ADDED: spike counters (record=False → per-neuron counts only, cheap) ───────
-# Tally input/hidden spikes so we can derive the two rate-vector baselines in the
-# same pass that builds the fingerprint.
-mon_in = SpikeMonitor(G_in, record=False)
-mon_h  = SpikeMonitor(G_h,  record=False)
-
-# ── Periodic L1 normalisation every 500 ms — excitatory and inhibitory ────────
+# ── Periodic L1 normalisation every 500 ms + snapshot collection ──────────────
 tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
 tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
 wmax_syn_arr     = np.array(S_ih.wmax_syn)
 wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
+
+_run_state = {"epoch": 0, "snapshots": []}
 
 @network_operation(dt=500*ms, when='end')
 def normalize_weights():
@@ -299,89 +301,53 @@ def normalize_weights():
         wsum  = w_col.sum()
         if wsum > NORM_LIMIT_INH:
             S_hh.w_inh[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
+    if _run_state["epoch"] >= SNAPSHOT_FROM_EPOCH:
+        w_snap = np.zeros((N_IN, N_H))
+        w_snap[src_ih, tgt_ih] = np.array(S_ih.w)
+        _run_state["snapshots"].append(w_snap)
 
-# ADDED: mon_in, mon_h included so they are part of the stored/restored state.
-net = Network(G_in, G_h, S_ih, S_hh, mon_in, mon_h, normalize_weights)
+net = Network(G_in, G_h, S_ih, S_hh, normalize_weights)
 G_h.vth = vth_init
 net.store('init')
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Single-run training
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _final_normalize(w_flat, w_inh_flat):
-    """One L1 normalisation pass on both excitatory and inhibitory weights."""
-    for j in range(N_H):
-        idx   = tgt_masks_ih[j]
-        w_col = w_flat[idx]
-        wsum  = w_col.sum()
-        if wsum > NORM_LIMIT_EXC:
-            w_flat[idx] = np.clip(w_col * NORM_LIMIT_EXC / wsum, wmin, wmax_syn_arr[idx])
-    for j in range(N_H):
-        idx   = tgt_masks_hh[j]
-        w_col = w_inh_flat[idx]
-        wsum  = w_col.sum()
-        if wsum > NORM_LIMIT_INH:
-            w_inh_flat[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
-    return w_flat, w_inh_flat
-
-
-def discover_split(split_dir):
-    """Return list of (person_id, record_id, wav_path) for every wav in split_dir."""
-    entries = []
-    for person_id in sorted(os.listdir(split_dir)):
-        person_dir = os.path.join(split_dir, person_id)
-        if not os.path.isdir(person_dir):
-            continue
-        for record_id in sorted(os.listdir(person_dir)):
-            record_dir = os.path.join(person_dir, record_id)
-            if not os.path.isdir(record_dir):
-                continue
-            for fname in sorted(f for f in os.listdir(record_dir) if f.endswith('.wav')):
-                entries.append({
-                    'person_id': person_id,
-                    'record_id': record_id,
-                    'wav_path':  os.path.join(record_dir, fname),
-                    'label':     f"{person_id}/{record_id}/{fname}",
-                })
-    return entries
-
 
 def train_fingerprint(wav_path, label):
-    """Train fresh SNN for NUM_EPOCHS on one wav file; return averaged fingerprint
-    AND the paired input/hidden rate vectors.
+    """Train one SNN run on a single wav and return the averaged weight fingerprint.
 
-    Weights reset to init_weights at the start. Snapshots collected from
-    COLLECT_FROM_EPOCH_IDX onward (0-indexed). Spike counts are tallied over the
-    same collection epochs and converted to per-neuron firing rates (Hz).
+    Weight snapshots are collected inside normalize_weights() every 500 ms for
+    epochs >= SNAPSHOT_FROM_EPOCH. The fingerprint is the mean of all snapshots.
 
-    Returns (fingerprint (N_IN,N_H) f32, input_rate (N_IN,) f32, hidden_rate (N_H,) f32)
-    or None if the wav could not be encoded.
+    Returns np.ndarray (N_IN, N_H) float32, or None if the wav could not be encoded.
     """
-    t0 = time.time()
-
-    w_ih = init_weights["in->hid"].copy()
-    w_hh = init_weights["hid->hid"].copy()
+    t0   = time.time()
+    w_ih = W_IH_INIT.copy()
+    w_hh = W_HH_INIT.copy()
+    _run_state["snapshots"] = []
 
     try:
         I, T = compute_spike_input_current(
-            wav_path, scale=0.8,
+            wav_path,
+            scale=1.0,
             num_filters=96,
-            sustained_per_band=4, onset_per_band=2, phase_per_band=1,
-            sust_spread_min=0.7, sust_spread_max=1.3,
+            sustained_per_band=4,
+            onset_per_band=2,
+            phase_per_band=1,
+            sust_gain=0.3,
+            onset_gain=2.25,
+            phase_gain=0.45,
+            sust_spread_min=0.7,
+            sust_spread_max=1.0,
         )
     except Exception as e:
         print(f"  [skip {label}: {e}]")
         return None
 
-    duration_s = float(T) * float(DT_SIM / second)   # ADDED: seconds simulated / epoch
-
-    collected = []
-    in_counts = []   # ADDED: per-epoch input spike counts (collection epochs)
-    h_counts  = []   # ADDED: per-epoch hidden spike counts (collection epochs)
-
     for epoch_idx in range(NUM_EPOCHS):
+        _run_state["epoch"] = epoch_idx
+
         net.restore('init')
         G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
 
@@ -393,50 +359,73 @@ def train_fingerprint(wav_path, label):
         S_hh.apre_inh  = 0
         S_hh.apost_inh = 0
 
-        # ADDED: delta-count spikes across this epoch's run. Reading before/after
-        # is robust whether or not restore('init') zeroes the monitors.
-        c_in_before = np.array(mon_in.count)
-        c_h_before  = np.array(mon_h.count)
-
         net.run(T * DT_SIM)
 
-        c_in_after = np.array(mon_in.count)
-        c_h_after  = np.array(mon_h.count)
-
-        w_raw     = np.array(S_ih.w)
-        w_inh_raw = np.array(S_hh.w_inh)
-        w_raw, w_inh_raw = _final_normalize(w_raw, w_inh_raw)
-        S_ih.w    = w_raw
-        S_hh.w_inh = w_inh_raw
-
         w_ih_new = np.zeros((N_IN, N_H))
-        w_ih_new[src_ih, tgt_ih] = w_raw
+        w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
         w_ih = w_ih_new
 
         w_hh_new = np.zeros((N_H, N_H))
-        w_hh_new[_src_hh, _tgt_hh] = w_inh_raw
+        w_hh_new[_src_hh, _tgt_hh] = np.array(S_hh.w_inh)
         w_hh = w_hh_new
 
-        if epoch_idx >= COLLECT_FROM_EPOCH_IDX:
-            collected.append(w_ih.copy())
-            in_counts.append(c_in_after - c_in_before)   # ADDED
-            h_counts.append(c_h_after - c_h_before)       # ADDED
+    snapshots = _run_state["snapshots"]
+    fingerprint = (np.mean(np.stack(snapshots), axis=0).astype(np.float32)
+                   if snapshots else w_ih.astype(np.float32))
+    print(f"  {label}  →  {len(snapshots)} snapshot(s) averaged  ({time.time()-t0:.1f}s)")
+    return fingerprint
 
-    fingerprint = (np.mean(collected, axis=0).astype(np.float32)
-                   if collected else w_ih.astype(np.float32))
+# ─────────────────────────────────────────────────────────────────────────────
+# Tensor transform: (672, 672) excitatory matrix → (2, 7, 33, 672)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    # ADDED: mean spike count over collection epochs → firing rate in Hz
-    if in_counts:
-        input_rate  = (np.mean(in_counts, axis=0) / duration_s).astype(np.float32)
-        hidden_rate = (np.mean(h_counts,  axis=0) / duration_s).astype(np.float32)
-    else:
-        input_rate  = ((c_in_after - c_in_before) / duration_s).astype(np.float32)
-        hidden_rate = ((c_h_after  - c_h_before)  / duration_s).astype(np.float32)
+def _build_type_image(fp, t):
+    """Unroll the tonotopic band for input-neuron type t → (33, 672) float32."""
+    j      = np.arange(N_H)
+    ch_j   = j // N_PER_CHANNEL                                   # (672,)
+    in_ch  = (ch_j[None, :] + OFFSETS[:, None]) % N_CHANNELS      # (33, 672)
+    in_idx = in_ch * N_PER_CHANNEL + t                           # (33, 672)
+    return fp[in_idx, j[None, :]].astype(np.float32)             # (33, 672)
 
-    print(f"  {label}  →  {len(collected)} snapshot(s) | "
-          f"in {input_rate.mean():5.1f}Hz hid {hidden_rate.mean():5.1f}Hz  ({time.time()-t0:.1f}s)")
-    return fingerprint, input_rate, hidden_rate
 
+def _zscore_cols(img):
+    """Z-score each hidden column down the 33 offset rows → zero-mean / unit-std."""
+    mu  = img.mean(axis=0, keepdims=True)
+    std = img.std(axis=0, keepdims=True)
+    return (img - mu) / (std + 1e-8)
+
+
+def fingerprint_to_tensor(fp):
+    """(672, 672) → (2, 7, 33, 672): [raw, zscore] x 7 types x 33 offsets x 672 hidden."""
+    raw = np.stack([_build_type_image(fp, t) for t in range(N_PER_CHANNEL)])   # (7,33,672)
+    z   = np.stack([_zscore_cols(raw[t])     for t in range(N_PER_CHANNEL)])   # (7,33,672)
+    return np.stack([raw, z]).astype(np.float32)                              # (2,7,33,672)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manifest discovery
+# ─────────────────────────────────────────────────────────────────────────────
+
+def discover_split(split_blk, dataset_root):
+    """Yield ordered per-wav entries for one manifest split block.
+
+    Returns list of {person_id, record_id, wav, label, wav_path}.
+    """
+    wav_subdir = split_blk['wav_subdir']
+    persons    = split_blk['persons']
+    entries = []
+    for person_id in sorted(persons):
+        records = persons[person_id]
+        for record_id in sorted(records):
+            for wav in records[record_id]:
+                entries.append({
+                    'person_id': person_id,
+                    'record_id': record_id,
+                    'wav':       wav,
+                    'label':     f"{person_id}/{record_id}/{wav}",
+                    'wav_path':  os.path.join(dataset_root, wav_subdir,
+                                              person_id, record_id, wav),
+                })
+    return entries
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
@@ -444,9 +433,12 @@ def train_fingerprint(wav_path, label):
 
 t_start = time.time()
 
-for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PATH)):
-    split_dir = os.path.join(DATASET_ROOT, split_name)
-    entries   = discover_split(split_dir)
+with open(MANIFEST_PATH) as f:
+    manifest = yaml.safe_load(f)
+dataset_root = os.path.join(REPO_ROOT, manifest['dataset_root'])
+
+for split_name, out_path in (('dev', OUT_DEV_PATH), ('test', OUT_TEST_PATH)):
+    entries = discover_split(manifest[split_name], dataset_root)
     if args.warmup:
         entries = entries[:1]
     n       = len(entries)
@@ -462,34 +454,27 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     processed_labels = set()
     person_ids       = []
     record_ids       = []
-    row_labels       = []          # ADDED: row-aligned labels
-    input_rates      = []          # ADDED
-    hidden_rates     = []          # ADDED
+    row_labels       = []
     count            = 0
 
     if os.path.exists(mmap_path) and os.path.exists(meta_path):
         _meta = np.load(meta_path, allow_pickle=True)
-        # ADDED: require the rate arrays to be present, else resume would desync
-        _has_rates = ('input_rates' in _meta.files and 'hidden_rates' in _meta.files
-                      and 'row_labels' in _meta.files)
-        if int(_meta['n']) == n and _has_rates:
+        if int(_meta['n']) == n and 'row_labels' in _meta.files:
             count            = int(_meta['count'])
             person_ids       = _meta['person_ids'].tolist()
             record_ids       = _meta['record_ids'].tolist()
             row_labels       = _meta['row_labels'].tolist()
-            input_rates      = list(_meta['input_rates'])
-            hidden_rates     = list(_meta['hidden_rates'])
             processed_labels = set(row_labels)
-            fp_mmap = np.memmap(mmap_path, dtype='float32', mode='r+',
-                                shape=(n, N_IN, N_H))
+            fp_mmap = np.memmap(mmap_path, dtype='float16', mode='r+',
+                                shape=(n, *TENSOR_SHAPE))
             print(f"  Resumed  : {count}/{n} done, {n - len(processed_labels)} remaining")
         else:
             print(f"  Checkpoint incompatible (size/format), starting fresh")
-            fp_mmap = np.memmap(mmap_path, dtype='float32', mode='w+',
-                                shape=(n, N_IN, N_H))
+            fp_mmap = np.memmap(mmap_path, dtype='float16', mode='w+',
+                                shape=(n, *TENSOR_SHAPE))
     else:
-        fp_mmap = np.memmap(mmap_path, dtype='float32', mode='w+',
-                            shape=(n, N_IN, N_H))
+        fp_mmap = np.memmap(mmap_path, dtype='float16', mode='w+',
+                            shape=(n, *TENSOR_SHAPE))
         print(f"  Starting fresh: {n} fingerprints to process")
 
     remaining = [e for e in entries if e['label'] not in processed_labels]
@@ -497,28 +482,23 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     def _checkpoint():
         fp_mmap.flush()
         np.savez(meta_path,
-                 n            = np.array(n),
-                 count        = np.array(count),
-                 person_ids   = np.array(person_ids),
-                 record_ids   = np.array(record_ids),
-                 row_labels   = np.array(row_labels),
-                 input_rates  = np.array(input_rates,  dtype=np.float32),
-                 hidden_rates = np.array(hidden_rates, dtype=np.float32))
+                 n          = np.array(n),
+                 count      = np.array(count),
+                 person_ids = np.array(person_ids),
+                 record_ids = np.array(record_ids),
+                 row_labels = np.array(row_labels))
 
     new_since_save = 0
     for e in remaining:
-        print(f"[{count+1:03d}/{n:03d}] {e['label']}")
-        out = train_fingerprint(e['wav_path'], e['label'])
-        if out is None:
+        print(f"[{count+1:05d}/{n:05d}] {e['label']}")
+        fp = train_fingerprint(e['wav_path'], e['label'])
+        if fp is None:
             continue
-        fp, ir, hr = out                       # ADDED: unpack rates
-        fp_mmap[count] = fp
+        fp_mmap[count] = fingerprint_to_tensor(fp).astype(np.float16)
         count += 1
         person_ids.append(e['person_id'])
         record_ids.append(e['record_id'])
-        row_labels.append(e['label'])          # ADDED
-        input_rates.append(ir)                 # ADDED
-        hidden_rates.append(hr)                # ADDED
+        row_labels.append(e['label'])
         processed_labels.add(e['label'])
         new_since_save += 1
 
@@ -534,11 +514,9 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
     np.savez(
         out_path,
         fingerprints = fingerprints_arr,
-        input_rates  = np.array(input_rates,  dtype=np.float32),   # ADDED
-        hidden_rates = np.array(hidden_rates, dtype=np.float32),   # ADDED
         person_ids   = np.array(person_ids),
         record_ids   = np.array(record_ids),
-        labels       = np.array(row_labels),                       # ADDED
+        labels       = np.array(row_labels),
     )
 
     del fp_mmap
@@ -547,12 +525,8 @@ for split_name, out_path in (('wav_dev', OUT_DEV_PATH), ('wav_test', OUT_TEST_PA
         os.unlink(meta_path)
 
     print(f"\nSaved → {os.path.relpath(out_path)}")
-    print(f"  fingerprints : {fingerprints_arr.shape}  "
-          f"range [{fingerprints_arr.min():.4f}, {fingerprints_arr.max():.4f}]")
-    print(f"  input_rates  : {np.array(input_rates).shape}  "
-          f"mean {np.mean(input_rates):.2f} Hz")
-    print(f"  hidden_rates : {np.array(hidden_rates).shape}  "
-          f"mean {np.mean(hidden_rates):.2f} Hz")
-    print(f"  persons      : {persons}")
+    print(f"  fingerprints : {fingerprints_arr.shape}  {fingerprints_arr.dtype}  "
+          f"raw range [{fingerprints_arr[:, 0].min():.4f}, {fingerprints_arr[:, 0].max():.4f}]")
+    print(f"  persons      : {len(persons)}")
 
 print(f"\nTotal time: {time.time() - t_start:.1f}s")
