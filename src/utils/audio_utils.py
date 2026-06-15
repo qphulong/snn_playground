@@ -40,7 +40,7 @@ def auditory_frontend(
     eps=1e-6,
 ):
     """
-    Encode an audio waveform into auditory-inspired spike features.
+    Encode an audio waveform into auditory-inspired spike features
 
     This function implements a biologically inspired auditory pipeline:
     waveform → gammatone filterbank → upstream percentile normalization →

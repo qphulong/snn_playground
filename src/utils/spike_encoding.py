@@ -20,7 +20,7 @@ def compute_spike_input_current(
     per_channel=False,
 ):
     """
-    Convert an audio file into a downsampled input current matrix for a spiking neural network.
+    Convert an audio file into a downsampled input current matrix for a spiking neural network
 
     This function takes auditory features produced by `auditory_frontend()` and expands
     them into multiple neuron types per cochlear frequency band. Each neuron type
