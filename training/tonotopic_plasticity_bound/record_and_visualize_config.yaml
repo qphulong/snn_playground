@@ -44,8 +44,8 @@ record:
 
 visualize:
 
-  visualize_samples: [0, 1,2,3,4]
-  visualize_epoch:   [3]
+  visualize_samples: [0]
+  visualize_epoch:   [6,7]
 
   track_weight_delta: false
 
@@ -56,6 +56,13 @@ visualize:
       mean_firing_rate:   true
       membrane_potential: []
       membrane_potential_variables: []
+      # Color raster / spike-count / firing-rate by neuron type.
+      # Order matches compute_spike_input_current's (sustained, onset, phase)
+      # per-band layout; counts must sum to neurons_per_band (= 4).
+      neuron_types:
+        - {name: sustained, count: 2, color: steelblue}
+        - {name: onset,     count: 1, color: crimson}
+        - {name: phase,     count: 1, color: darkorange}
 
     hidden:
       spike_raster:       true
@@ -75,14 +82,22 @@ visualize:
 
   weights_per_neuron:
     in->hid:
-      - 398
-      - 399
-      - 400
-      - 401
-      - 402
+      - 220
+      - 221
+      - 222
+      - 223
+      - 224
+      - 225
+      - 226
+      - 227
+      - 228
     hid->hid:
-      - 398
-      - 399
-      - 400
-      - 401
-      - 402
+      - 220
+      - 221
+      - 222
+      - 223
+      - 224
+      - 225
+      - 226
+      - 227
+      - 228
