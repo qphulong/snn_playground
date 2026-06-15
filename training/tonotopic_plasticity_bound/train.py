@@ -27,7 +27,7 @@ wav_files = [
 
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 8
+EPOCHS   = 4
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -70,8 +70,8 @@ wmin = 0.0
 
 # -- Excitatory synapse --
 WMAX_CENTER  = 1.0
-APRE_CENTER  =  0.002
-APOST_CENTER = -0.0024
+APRE_CENTER  =  0.01
+APOST_CENTER = -0.012
 
 # -- Inhibitory lateral synapse --
 W_INH_CENTER = 1.0
