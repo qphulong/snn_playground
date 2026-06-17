@@ -1,414 +1,63 @@
 """
 prepare_fingerprints.py
 =======================
-Manifest-driven fingerprint generator for the new architecture (channel-distance
-tonotopic excitation + Jaccard-overlap lateral inhibition).  Same network, hyperparameters
-and snapshot mechanism as prepare_fingerprints_dummy.py, scaled to every wav listed in
-dataset_manifest.yaml, with crash-proof checkpoint/resume.
+Manifest-driven fingerprint generator for the reduced 4-neuron architecture with
+silence masking. Parallel (multiprocessing), sharded, and crash-proof.
 
-Pipeline per wav:
-  fresh SNN run (NUM_EPOCHS, 500 ms snapshots in the final epoch, fingerprint = mean of
-  snapshots) → (672, 672) excitatory matrix → transform → (2, 7, 33, 672) tensor (float16).
+Per-sample output (see _fingerprint_core.fingerprint_to_sample):
+  weights         (4, 33, 384)  float16  raw type-images, silent cells zeroed
+  input_activity  (384,)        float16  per-sample [0,1]
+  hidden_activity (384,)        float16  per-sample [0,1]
 
-Tensor axes ((672,672) excitatory matrix → (2, 7, 33, 672)):
-  axis 0 (2)   norm channel: 0 = raw weight, 1 = z-scored per hidden column
-  axis 1 (7)   within-channel input-neuron type (4 sustained, 2 onset, 1 phase)
-  axis 2 (33)  channel offset -16..+16 (full connectivity window; +-16 are zero borders)
-  axis 3 (672) hidden neuron j; ch_j = j // 7, in_idx = ((ch_j+o) % 96)*7 + t
+Sharding: entries are enumerated in a stable order (sorted person/record/wav) and
+split into fixed-size shards. A shard is the unit of work, output, and crash-resume:
+  {split}_fingerprints_{shard:04d}.npz
+Within a shard, fingerprints are written incrementally to a memmap + meta sidecar so a
+mid-shard crash resumes from the last checkpoint. A shard whose final npz exists is
+skipped. One worker owns a shard at a time, so there is never write contention.
 
-Input:
-  training/be_ann_w_fingerprints/dataset_manifest.yaml
-
-Output (one npz per split, in this script's dir):
-  dev_fingerprints.npz / test_fingerprints.npz
-    fingerprints (N, 2, 7, 33, 672)  float16
-    person_ids   (N,)                str
-    record_ids   (N,)                str
-    labels       (N,)                str   = person/record/wav
+The manifest's per-split `generated:` list is updated (atomically, by the main process
+only) as each shard completes — it is a convenience cache; the shard npz files on disk
+are the ground truth for resume.
 
 Usage:
   cd <repo_root>
-  python training/be_ann_w_fingerprints/prepare_fingerprints.py            # full run
-  python training/be_ann_w_fingerprints/prepare_fingerprints.py --warmup   # 1 wav/split
+  ./venv/bin/python training/be_ann_w_fingerprints/prepare_fingerprints.py
+  ./venv/bin/python training/be_ann_w_fingerprints/prepare_fingerprints.py --workers 2 --shard-size 2000
+  ./venv/bin/python training/be_ann_w_fingerprints/prepare_fingerprints.py --workers 2 --shard-size 50 --limit 120   # smoke
 """
 
-import argparse
 import os
 import sys
-import time
-
-import numpy as np
-np.random.seed(42)
-import yaml
-
-from brian2 import (
-    NeuronGroup, Synapses, TimedArray, Network, network_operation,
-    defaultclock, ms, second,
-)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT  = os.path.join(SCRIPT_DIR, '..', '..')
+# Make the sibling core module importable whether run by path or re-imported by a
+# spawned worker. Import the core FIRST so its BLAS-thread pinning beats numpy.
+sys.path.insert(0, SCRIPT_DIR)
+import _fingerprint_core as C  # noqa: E402
 
-sys.path.insert(0, REPO_ROOT)
-from src.utils.spike_encoding import compute_spike_input_current
+import argparse        # noqa: E402
+import multiprocessing as mp  # noqa: E402
+import time            # noqa: E402
 
-_ap = argparse.ArgumentParser()
-_ap.add_argument('--warmup', action='store_true',
-                 help='Process only 1 fingerprint per split (pipeline smoke-test)')
-args = _ap.parse_args()
+import numpy as np     # noqa: E402
+import yaml            # noqa: E402
+DEFAULT_MANIFEST = os.path.join(SCRIPT_DIR, 'dataset_manifest.yaml')
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Paths
-# ─────────────────────────────────────────────────────────────────────────────
+CHECKPOINT_EVERY = 20   # flush memmap + meta every N fingerprints within a shard
+_LOG_EVERY = 10         # per-worker progress print cadence (set in _init_worker)
 
-MANIFEST_PATH = os.path.join(SCRIPT_DIR, 'dataset_manifest.yaml')
-OUT_DEV_PATH  = os.path.join(SCRIPT_DIR, 'dev_fingerprints.npz')
-OUT_TEST_PATH = os.path.join(SCRIPT_DIR, 'test_fingerprints.npz')
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Hyperparameters  (match prepare_fingerprints_dummy.py)
-# ─────────────────────────────────────────────────────────────────────────────
-
-N_IN = 672   # 96 channels × 7 neurons/channel
-N_H  = 672
-
-DT_SIM = 1 * ms
-
-# -- Input layer (adaptive LIF) --
-tau_m       = 40 * ms
-tau_a       = 100 * ms
-tau_current = 1 * ms
-beta        = 1
-v_th_in     = 1.0
-
-# -- Hidden layer (adaptive-threshold LIF) --
-tau_h    = 50 * ms
-tau_vth  = 100 * ms
-vth_rest = 0.8
-vth_init = 0.8
-vth_jump = 0.3
-
-# -- Soft refractory (hidden only) --
-tau_r = 10 * ms
-
-# -- Membrane noise (hidden only) --
-sigma_noise = 0.03 * second**(-0.5)
-
-# -- STDP (excitatory) --
-taupre  = 20 * ms
-taupost = 20 * ms
-
-# -- Excitatory weight bounds --
-wmin = 0.0
-
-# -- Excitatory synapse --
-WMAX_CENTER  = 1.0
-APRE_CENTER  =  0.002
-APOST_CENTER = -0.0024
-
-# -- Inhibitory lateral synapse --
-W_INH_CENTER = 1.0
-W_INH_MIN    = 0.0
-APRE_INH     = 0.0005
-APOST_INH    = -0.0006
-
-# -- Channel layout --
-N_CHANNELS    = 96
-N_PER_CHANNEL = N_IN // N_CHANNELS   # 7
-
-# -- Tonotopic plasticity (polynomial decay: max(0, 1-(d_channel/R)^p)) --
-R_EXC_CHANNEL = 16
-p_EXC         = 3
-
-# -- Homeostatic normalisation --
-NORM_LIMIT_EXC = 2
-NORM_LIMIT_INH = 0.9
-
-# -- Fingerprint collection --
-NUM_EPOCHS         = 2
-SNAPSHOT_FROM_EPOCH = 1   # collect snapshots from this epoch onward (0-indexed)
-
-# -- Tensor transform (fingerprint (672,672) -> (2, 7, 33, 672)) --
-OFFSETS      = np.arange(-R_EXC_CHANNEL, R_EXC_CHANNEL + 1)   # -16..+16  (33 values)
-TENSOR_SHAPE = (2, N_PER_CHANNEL, len(OFFSETS), N_H)         # (2, 7, 33, 672)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pre-compute tonotopic plasticity matrices — excitatory
-# Distance is measured in channels: d_ch = |ch_i - ch_j| (circular on N_CHANNELS).
-# topo(d_ch) = max(0, 1-(d_ch/R_EXC_CHANNEL)^p); hard cutoff at d_ch=R_EXC_CHANNEL.
-# ─────────────────────────────────────────────────────────────────────────────
-
-_ch_i    = (np.arange(N_IN) // N_PER_CHANNEL).reshape(-1, 1)
-_ch_j    = (np.arange(N_H)  // N_PER_CHANNEL).reshape(1, -1)
-_dist_ch = np.abs(_ch_i - _ch_j)
-_dist_ch = np.minimum(_dist_ch, N_CHANNELS - _dist_ch)
-_topo_exc = np.maximum(0.0, 1.0 - (_dist_ch / R_EXC_CHANNEL) ** p_EXC)
-_mask_ih  = _dist_ch <= R_EXC_CHANNEL
-_src_ih, _tgt_ih = np.where(_mask_ih)
-
-wmax_matrix  = WMAX_CENTER  * _topo_exc
-Apre_matrix  = APRE_CENTER  * _topo_exc
-Apost_matrix = APOST_CENTER * _topo_exc
-del _ch_i, _ch_j, _dist_ch, _topo_exc
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pre-compute inhibitory plasticity matrices — Jaccard similarity.
-# Two hidden neurons inhibit each other iff their excitatory input sets overlap.
-# wmax/Apre/Apost scale by Jaccard = overlap_ch / (window_size + d_ch_hh).
-# No self-connections.
-# ─────────────────────────────────────────────────────────────────────────────
-
-_ch_h       = np.arange(N_H) // N_PER_CHANNEL
-_dist_ch_hh = np.abs(_ch_h.reshape(-1, 1) - _ch_h.reshape(1, -1))
-_dist_ch_hh = np.minimum(_dist_ch_hh, N_CHANNELS - _dist_ch_hh)
-
-_window_size = 2 * R_EXC_CHANNEL + 1
-_overlap_ch  = np.maximum(0, _window_size - _dist_ch_hh)
-_jaccard     = np.where(
-    _overlap_ch > 0,
-    _overlap_ch / (_window_size + _dist_ch_hh),
-    0.0,
-)
-_mask_hh  = (_overlap_ch > 0) & (~np.eye(N_H, dtype=bool))
-_src_hh, _tgt_hh = np.where(_mask_hh)
-
-wmax_inh_matrix  = W_INH_CENTER * _jaccard
-Apre_inh_matrix  = APRE_INH     * _jaccard
-Apost_inh_matrix = APOST_INH    * _jaccard
-del _ch_h, _dist_ch_hh, _overlap_ch, _jaccard
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared initial weight matrices — same for all runs
-# Excitatory: formula-shaped, column-normalised to NORM_LIMIT_EXC
-# Inhibitory: formula-shaped, column-normalised to NORM_LIMIT_INH
-# ─────────────────────────────────────────────────────────────────────────────
-
-W_IH_INIT = np.zeros((N_IN, N_H))
-W_IH_INIT[_src_ih, _tgt_ih] = wmax_matrix[_src_ih, _tgt_ih]
-for _j in range(N_H):
-    _col_mask = (_tgt_ih == _j)
-    _rows = _src_ih[_col_mask]
-    _wsum = W_IH_INIT[_rows, _j].sum()
-    if _wsum > 0:
-        W_IH_INIT[_rows, _j] *= NORM_LIMIT_EXC / _wsum
-
-W_HH_INIT = np.zeros((N_H, N_H))
-W_HH_INIT[_src_hh, _tgt_hh] = wmax_inh_matrix[_src_hh, _tgt_hh]
-for _j in range(N_H):
-    _col_mask = (_tgt_hh == _j)
-    _rows = _src_hh[_col_mask]
-    _wsum = W_HH_INIT[_rows, _j].sum()
-    if _wsum > 0:
-        W_HH_INIT[_rows, _j] *= NORM_LIMIT_INH / _wsum
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Build Brian2 network (once — shared across all runs)
-# ─────────────────────────────────────────────────────────────────────────────
-
-defaultclock.dt = DT_SIM
-
-# ── Input neurons ──────────────────────────────────────────────────────────────
-eqs_in = """
-dv/dt = (-v - a) / tau_m + I_timed(t, i) / tau_current : 1
-da/dt = -a / tau_a : 1
-"""
-G_in = NeuronGroup(
-    N_IN, eqs_in,
-    threshold="v > v_th_in",
-    reset="v=0; a+=beta",
-    refractory=2 * ms,
-    method="euler"
-)
-_dummy_I = np.zeros((1, N_IN), dtype=float)
-G_in.namespace["I_timed"] = TimedArray(_dummy_I, dt=DT_SIM)
-
-# ── Hidden neurons ─────────────────────────────────────────────────────────────
-eqs_h = f"""
-dv/dt       = -v / tau_h + sigma_noise * xi                       : 1
-dvth/dt     = -(vth - {vth_rest}) / tau_vth                       : 1
-dtrace_r/dt = -trace_r / tau_r                                    : 1
-"""
-G_h = NeuronGroup(
-    N_H, eqs_h,
-    threshold="v > vth",
-    reset=f"v=0; vth=vth+{vth_jump}; trace_r=1;",
-    method="euler"
-)
-
-# ── STDP synapses: input → hidden ─────────────────────────────────────────────
-stdp_model = """
-w          : 1
-dapre/dt   = -apre  / taupre  : 1 (event-driven)
-dapost/dt  = -apost / taupost : 1 (event-driven)
-wmax_syn   : 1
-Apre_syn   : 1
-Apost_syn  : 1
-"""
-on_pre  = "v_post += w * (1 - trace_r_post)\napre += Apre_syn\nw = clip(w + apost*(w-wmin), wmin, wmax_syn)"
-on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
-
-S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
-S_ih.connect(i=_src_ih, j=_tgt_ih)
-src_ih = np.array(S_ih.i)
-tgt_ih = np.array(S_ih.j)
-
-S_ih.wmax_syn  = wmax_matrix[src_ih, tgt_ih]
-S_ih.Apre_syn  = Apre_matrix[src_ih, tgt_ih]
-S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
-
-# ── Inhibitory lateral synapse: hidden → hidden ────────────────────────────────
-stdp_inh_model = """
-w_inh          : 1
-dapre_inh/dt   = -apre_inh  / taupre  : 1 (event-driven)
-dapost_inh/dt  = -apost_inh / taupost : 1 (event-driven)
-wmax_inh_syn   : 1
-Apre_inh_syn   : 1
-Apost_inh_syn  : 1
-"""
-on_pre_inh  = (f"v_post -= w_inh\n"
-               f"apre_inh += Apre_inh_syn\n"
-               f"w_inh = clip(w_inh + apost_inh*(w_inh-{W_INH_MIN}), {W_INH_MIN}, wmax_inh_syn)")
-on_post_inh = (f"apost_inh += Apost_inh_syn\n"
-               f"w_inh = clip(w_inh + apre_inh*(wmax_inh_syn-w_inh), {W_INH_MIN}, wmax_inh_syn)")
-
-S_hh = Synapses(G_h, G_h, model=stdp_inh_model, on_pre=on_pre_inh, on_post=on_post_inh)
-S_hh.connect(i=_src_hh, j=_tgt_hh)
-
-S_hh.wmax_inh_syn  = wmax_inh_matrix[_src_hh, _tgt_hh]
-S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
-S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
-S_hh.w_inh         = W_HH_INIT[_src_hh, _tgt_hh]
-
-# ── Periodic L1 normalisation every 500 ms + snapshot collection ──────────────
-tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
-tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
-wmax_syn_arr     = np.array(S_ih.wmax_syn)
-wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
-
-_run_state = {"epoch": 0, "snapshots": []}
-
-@network_operation(dt=500*ms, when='end')
-def normalize_weights():
-    for j in range(N_H):
-        idx   = tgt_masks_ih[j]
-        w_col = np.array(S_ih.w[idx])
-        wsum  = w_col.sum()
-        if wsum > NORM_LIMIT_EXC:
-            S_ih.w[idx] = np.clip(w_col * NORM_LIMIT_EXC / wsum, wmin, wmax_syn_arr[idx])
-    for j in range(N_H):
-        idx   = tgt_masks_hh[j]
-        w_col = np.array(S_hh.w_inh[idx])
-        wsum  = w_col.sum()
-        if wsum > NORM_LIMIT_INH:
-            S_hh.w_inh[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
-    if _run_state["epoch"] >= SNAPSHOT_FROM_EPOCH:
-        w_snap = np.zeros((N_IN, N_H))
-        w_snap[src_ih, tgt_ih] = np.array(S_ih.w)
-        _run_state["snapshots"].append(w_snap)
-
-net = Network(G_in, G_h, S_ih, S_hh, normalize_weights)
-G_h.vth = vth_init
-net.store('init')
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Single-run training
-# ─────────────────────────────────────────────────────────────────────────────
-
-def train_fingerprint(wav_path, label):
-    """Train one SNN run on a single wav and return the averaged weight fingerprint.
-
-    Weight snapshots are collected inside normalize_weights() every 500 ms for
-    epochs >= SNAPSHOT_FROM_EPOCH. The fingerprint is the mean of all snapshots.
-
-    Returns np.ndarray (N_IN, N_H) float32, or None if the wav could not be encoded.
-    """
-    t0   = time.time()
-    w_ih = W_IH_INIT.copy()
-    w_hh = W_HH_INIT.copy()
-    _run_state["snapshots"] = []
-
-    try:
-        I, T = compute_spike_input_current(
-            wav_path,
-            scale=1.0,
-            num_filters=96,
-            sustained_per_band=4,
-            onset_per_band=2,
-            phase_per_band=1,
-            sust_gain=0.3,
-            onset_gain=2.25,
-            phase_gain=0.45,
-            sust_spread_min=0.7,
-            sust_spread_max=1.0,
-        )
-    except Exception as e:
-        print(f"  [skip {label}: {e}]")
-        return None
-
-    for epoch_idx in range(NUM_EPOCHS):
-        _run_state["epoch"] = epoch_idx
-
-        net.restore('init')
-        G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
-
-        S_ih.w         = w_ih[src_ih, tgt_ih]
-        S_ih.apre      = 0
-        S_ih.apost     = 0
-
-        S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
-        S_hh.apre_inh  = 0
-        S_hh.apost_inh = 0
-
-        net.run(T * DT_SIM)
-
-        w_ih_new = np.zeros((N_IN, N_H))
-        w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
-        w_ih = w_ih_new
-
-        w_hh_new = np.zeros((N_H, N_H))
-        w_hh_new[_src_hh, _tgt_hh] = np.array(S_hh.w_inh)
-        w_hh = w_hh_new
-
-    snapshots = _run_state["snapshots"]
-    fingerprint = (np.mean(np.stack(snapshots), axis=0).astype(np.float32)
-                   if snapshots else w_ih.astype(np.float32))
-    print(f"  {label}  →  {len(snapshots)} snapshot(s) averaged  ({time.time()-t0:.1f}s)")
-    return fingerprint
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tensor transform: (672, 672) excitatory matrix → (2, 7, 33, 672)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _build_type_image(fp, t):
-    """Unroll the tonotopic band for input-neuron type t → (33, 672) float32."""
-    j      = np.arange(N_H)
-    ch_j   = j // N_PER_CHANNEL                                   # (672,)
-    in_ch  = (ch_j[None, :] + OFFSETS[:, None]) % N_CHANNELS      # (33, 672)
-    in_idx = in_ch * N_PER_CHANNEL + t                           # (33, 672)
-    return fp[in_idx, j[None, :]].astype(np.float32)             # (33, 672)
-
-
-def _zscore_cols(img):
-    """Z-score each hidden column down the 33 offset rows → zero-mean / unit-std."""
-    mu  = img.mean(axis=0, keepdims=True)
-    std = img.std(axis=0, keepdims=True)
-    return (img - mu) / (std + 1e-8)
-
-
-def fingerprint_to_tensor(fp):
-    """(672, 672) → (2, 7, 33, 672): [raw, zscore] x 7 types x 33 offsets x 672 hidden."""
-    raw = np.stack([_build_type_image(fp, t) for t in range(N_PER_CHANNEL)])   # (7,33,672)
-    z   = np.stack([_zscore_cols(raw[t])     for t in range(N_PER_CHANNEL)])   # (7,33,672)
-    return np.stack([raw, z]).astype(np.float32)                              # (2,7,33,672)
-
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 # Manifest discovery
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def discover_split(split_blk, dataset_root):
-    """Yield ordered per-wav entries for one manifest split block.
+    """Ordered per-wav entries for one manifest split block.
 
-    Returns list of {person_id, record_id, wav, label, wav_path}.
+    Returns list of {person_id, record_id, wav, label, wav_path}, sorted
+    deterministically by person / record / wav.
     """
     wav_subdir = split_blk['wav_subdir']
     persons    = split_blk['persons']
@@ -416,7 +65,7 @@ def discover_split(split_blk, dataset_root):
     for person_id in sorted(persons):
         records = persons[person_id]
         for record_id in sorted(records):
-            for wav in records[record_id]:
+            for wav in sorted(records[record_id]):
                 entries.append({
                     'person_id': person_id,
                     'record_id': record_id,
@@ -427,106 +76,205 @@ def discover_split(split_blk, dataset_root):
                 })
     return entries
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
 
-t_start = time.time()
+def shard_paths(split, shard_idx):
+    base = os.path.join(SCRIPT_DIR, f"{split}_fingerprints_{shard_idx:04d}.npz")
+    return {'out': base, 'mmap': base + '.mmap', 'meta': base + '.meta.npz'}
 
-with open(MANIFEST_PATH) as f:
-    manifest = yaml.safe_load(f)
-dataset_root = os.path.join(REPO_ROOT, manifest['dataset_root'])
 
-for split_name, out_path in (('dev', OUT_DEV_PATH), ('test', OUT_TEST_PATH)):
-    entries = discover_split(manifest[split_name], dataset_root)
-    if args.warmup:
-        entries = entries[:1]
-    n       = len(entries)
-    persons = sorted(set(e['person_id'] for e in entries))
-    print(f"\n{'='*60}")
-    print(f"Split: {split_name}  |  {n} wav file(s) across {len(persons)} person(s)")
-    print(f"{'='*60}")
+# ═══════════════════════════════════════════════════════════════════════════════
+# Worker
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    mmap_path = out_path + '.mmap'
-    meta_path = out_path + '.meta.npz'
+_H = None   # per-process Brian2 network handle
 
-    # ── Resume: load checkpoint if available ─────────────────────────────
-    processed_labels = set()
-    person_ids       = []
-    record_ids       = []
-    row_labels       = []
-    count            = 0
 
-    if os.path.exists(mmap_path) and os.path.exists(meta_path):
-        _meta = np.load(meta_path, allow_pickle=True)
-        if int(_meta['n']) == n and 'row_labels' in _meta.files:
-            count            = int(_meta['count'])
-            person_ids       = _meta['person_ids'].tolist()
-            record_ids       = _meta['record_ids'].tolist()
-            row_labels       = _meta['row_labels'].tolist()
-            processed_labels = set(row_labels)
-            fp_mmap = np.memmap(mmap_path, dtype='float16', mode='r+',
-                                shape=(n, *TENSOR_SHAPE))
-            print(f"  Resumed  : {count}/{n} done, {n - len(processed_labels)} remaining")
+def _init_worker(log_every):
+    global _H, _LOG_EVERY
+    _LOG_EVERY = log_every
+    _H = C.build_network()
+
+
+def process_shard(task):
+    """Generate all fingerprints for one shard; write the shard npz. Resumable.
+
+    Returns (split, shard_idx, labels_written, status).
+    """
+    split, shard_idx, n_shards, entries = task
+    paths = shard_paths(split, shard_idx)
+    tag = f"{split} shard {shard_idx + 1:02d}/{n_shards}"
+    if os.path.exists(paths['out']):
+        return (split, shard_idx, [e['label'] for e in entries], 'exists')
+
+    n = len(entries)
+    mmap_shape = (n,) + C.WEIGHTS_SHAPE
+
+    count = 0
+    ia, ha, pids, rids, labels = [], [], [], [], []
+
+    # ── Resume mid-shard from memmap + meta if compatible ─────────────────────
+    if os.path.exists(paths['mmap']) and os.path.exists(paths['meta']):
+        m = np.load(paths['meta'], allow_pickle=True)
+        if int(m['n']) == n:
+            count  = int(m['count'])
+            ia     = [r for r in m['input_activity']]
+            ha     = [r for r in m['hidden_activity']]
+            pids   = m['person_ids'].tolist()
+            rids   = m['record_ids'].tolist()
+            labels = m['labels'].tolist()
+            weights_mm = np.memmap(paths['mmap'], dtype='float16', mode='r+', shape=mmap_shape)
         else:
-            print(f"  Checkpoint incompatible (size/format), starting fresh")
-            fp_mmap = np.memmap(mmap_path, dtype='float16', mode='w+',
-                                shape=(n, *TENSOR_SHAPE))
+            weights_mm = np.memmap(paths['mmap'], dtype='float16', mode='w+', shape=mmap_shape)
     else:
-        fp_mmap = np.memmap(mmap_path, dtype='float16', mode='w+',
-                            shape=(n, *TENSOR_SHAPE))
-        print(f"  Starting fresh: {n} fingerprints to process")
-
-    remaining = [e for e in entries if e['label'] not in processed_labels]
+        weights_mm = np.memmap(paths['mmap'], dtype='float16', mode='w+', shape=mmap_shape)
 
     def _checkpoint():
-        fp_mmap.flush()
-        np.savez(meta_path,
-                 n          = np.array(n),
-                 count      = np.array(count),
-                 person_ids = np.array(person_ids),
-                 record_ids = np.array(record_ids),
-                 row_labels = np.array(row_labels))
+        weights_mm.flush()
+        np.savez(
+            paths['meta'],
+            n=n, count=count,
+            input_activity=(np.stack(ia) if ia else np.zeros((0, C.N_IN), np.float16)),
+            hidden_activity=(np.stack(ha) if ha else np.zeros((0, C.N_H), np.float16)),
+            person_ids=np.array(pids), record_ids=np.array(rids), labels=np.array(labels),
+        )
 
-    new_since_save = 0
-    for e in remaining:
-        print(f"[{count+1:05d}/{n:05d}] {e['label']}")
-        fp = train_fingerprint(e['wav_path'], e['label'])
-        if fp is None:
+    produced = set(labels)
+    if count:
+        print(f"  [{tag}] resuming at {count}/{n} samples", flush=True)
+    t_sh, since = time.time(), 0
+    for e in entries:
+        if e['label'] in produced:
             continue
-        fp_mmap[count] = fingerprint_to_tensor(fp).astype(np.float16)
+        out = C.train_fingerprint(_H, e['wav_path'])
+        if out is None:
+            continue   # unencodable wav — not recorded
+        w, iaa, haa = C.fingerprint_to_sample(*out)
+        weights_mm[count] = w
+        ia.append(iaa); ha.append(haa)
+        pids.append(e['person_id']); rids.append(e['record_id']); labels.append(e['label'])
+        produced.add(e['label'])
         count += 1
-        person_ids.append(e['person_id'])
-        record_ids.append(e['record_id'])
-        row_labels.append(e['label'])
-        processed_labels.add(e['label'])
-        new_since_save += 1
-
-        if new_since_save >= 10:
+        since += 1
+        if count % _LOG_EVERY == 0:
+            rate = (time.time() - t_sh) / max(since, 1)
+            print(f"  [{tag}] {count}/{n} samples ({100 * count // n}%)  "
+                  f"{rate:.1f}s/sample", flush=True)
+        if count % CHECKPOINT_EVERY == 0:
             _checkpoint()
-            new_since_save = 0
-            print(f"  [checkpoint: {count}/{n}]")
 
-    # Final checkpoint then convert memmap → npz
-    _checkpoint()
-
-    fingerprints_arr = fp_mmap[:count]
+    # ── Finalise: write the shard npz, drop the resume sidecars ───────────────
     np.savez(
-        out_path,
-        fingerprints = fingerprints_arr,
-        person_ids   = np.array(person_ids),
-        record_ids   = np.array(record_ids),
-        labels       = np.array(row_labels),
+        paths['out'],
+        weights=np.ascontiguousarray(weights_mm[:count]),
+        input_activity=(np.stack(ia) if ia else np.zeros((0, C.N_IN), np.float16)),
+        hidden_activity=(np.stack(ha) if ha else np.zeros((0, C.N_H), np.float16)),
+        person_ids=np.array(pids), record_ids=np.array(rids), labels=np.array(labels),
     )
+    del weights_mm
+    for p in (paths['mmap'], paths['meta']):
+        if os.path.exists(p):
+            os.unlink(p)
+    return (split, shard_idx, labels, 'done')
 
-    del fp_mmap
-    os.unlink(mmap_path)
-    if os.path.exists(meta_path):
-        os.unlink(meta_path)
 
-    print(f"\nSaved → {os.path.relpath(out_path)}")
-    print(f"  fingerprints : {fingerprints_arr.shape}  {fingerprints_arr.dtype}  "
-          f"raw range [{fingerprints_arr[:, 0].min():.4f}, {fingerprints_arr[:, 0].max():.4f}]")
-    print(f"  persons      : {len(persons)}")
+# ═══════════════════════════════════════════════════════════════════════════════
+# Manifest `generated:` status (main process only)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-print(f"\nTotal time: {time.time() - t_start:.1f}s")
+def update_manifest_generated(manifest_path, split, new_labels):
+    """Atomically merge new_labels into manifest[split]['generated']."""
+    with open(manifest_path) as f:
+        manifest = yaml.safe_load(f)
+    blk = manifest.get(split)
+    if not isinstance(blk, dict):
+        return
+    done = set(blk.get('generated') or [])
+    done.update(new_labels)
+    blk['generated'] = sorted(done)
+    tmp = manifest_path + '.tmp'
+    with open(tmp, 'w') as f:
+        yaml.safe_dump(manifest, f, sort_keys=False, default_flow_style=False)
+    os.replace(tmp, manifest_path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_tasks(manifest, dataset_root, shard_size, limit):
+    """Return (tasks, stats). tasks = list of (split, shard_idx, entries) for
+    shards whose final npz does not yet exist."""
+    tasks, stats = [], {}
+    for split in ('dev', 'test'):
+        if split not in manifest:
+            continue
+        entries = discover_split(manifest[split], dataset_root)
+        if limit:
+            entries = entries[:limit]
+        n_shards = (len(entries) + shard_size - 1) // shard_size
+        done_shards = 0
+        for s in range(n_shards):
+            chunk = entries[s * shard_size:(s + 1) * shard_size]
+            if os.path.exists(shard_paths(split, s)['out']):
+                done_shards += 1
+                continue
+            tasks.append((split, s, n_shards, chunk))
+        stats[split] = {'entries': len(entries), 'shards': n_shards, 'done': done_shards}
+    return tasks, stats
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--manifest', default=DEFAULT_MANIFEST)
+    ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 2) // 2),
+                    help='parallel worker processes (default = physical cores)')
+    ap.add_argument('--shard-size', type=int, default=2000,
+                    help='fingerprints per shard npz')
+    ap.add_argument('--limit', type=int, default=0,
+                    help='process at most N entries per split (0 = all; smoke testing)')
+    ap.add_argument('--log-every', type=int, default=10,
+                    help='print within-shard progress every N samples')
+    args = ap.parse_args()
+
+    t_start = time.time()
+
+    with open(args.manifest) as f:
+        manifest = yaml.safe_load(f)
+    dataset_root = os.path.join(REPO_ROOT, manifest['dataset_root'])
+
+    tasks, stats = build_tasks(manifest, dataset_root, args.shard_size, args.limit)
+
+    print(f"{'='*64}")
+    for split, st in stats.items():
+        print(f"{split:>4}: {st['entries']:>7} entries, {st['shards']:>4} shards "
+              f"({st['done']} already complete)")
+    print(f"workers={args.workers}  shard_size={args.shard_size}"
+          + (f"  limit={args.limit}/split" if args.limit else ""))
+    print(f"shards to process: {len(tasks)}")
+    print(f"{'='*64}")
+
+    if not tasks:
+        print("Nothing to do — all shards complete.")
+        return
+
+    # Warm the Cython codegen cache once so spawned workers reuse the compiled
+    # extension instead of compiling concurrently on first build.
+    print("warming codegen cache ...")
+    C.build_network()
+
+    ctx = mp.get_context('spawn')
+    n_done = 0
+    with ctx.Pool(args.workers, initializer=_init_worker, initargs=(args.log_every,)) as pool:
+        for split, shard_idx, labels, status in pool.imap_unordered(process_shard, tasks):
+            if status == 'done':
+                update_manifest_generated(args.manifest, split, labels)
+            n_done += 1
+            print(f"[{n_done}/{len(tasks)}] {split} shard {shard_idx:04d}: "
+                  f"{len(labels)} fingerprints ({status})  "
+                  f"[{time.time()-t_start:.0f}s elapsed]")
+
+    print(f"\nDone — {len(tasks)} shard(s) in {time.time()-t_start:.0f}s")
+
+
+if __name__ == '__main__':
+    main()
