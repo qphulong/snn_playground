@@ -12,3 +12,4 @@ pretrained_models/
 *.pth
 *.png
 *.log
+*.pdf
