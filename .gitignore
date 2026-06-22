@@ -11,3 +11,4 @@ training/tonotopic_plasticity_bound/id10797_00002_vizs/
 pretrained_models/
 *.pth
 *.png
+*.log
