@@ -1,6 +1,73 @@
+import shutil
+import subprocess
+
 import numpy as np
 import librosa
+import soundfile as sf
 from gammatone.filters import centre_freqs, make_erb_filters, erb_filterbank
+
+
+def _ffprobe_sample_rate(path):
+    """Native sample rate of `path` via ffprobe, or None if it can't be determined."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        out = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=sample_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip().splitlines()
+        return int(out[0]) if out else None
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
+def _ffmpeg_decode(path, sr):
+    """Decode any ffmpeg-readable container (m4a/aac/mp3/...) to a mono float32
+    waveform. If `sr` is None the native rate is probed and preserved; otherwise
+    ffmpeg's resampler outputs directly at `sr`."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            f"Cannot decode {path!r}: libsndfile failed and ffmpeg is not on PATH. "
+            "Install ffmpeg to read m4a/aac audio."
+        )
+    target_sr = sr if sr is not None else (_ffprobe_sample_rate(path) or 16000)
+    proc = subprocess.run(
+        [ffmpeg, "-nostdin", "-loglevel", "error", "-i", path,
+         "-ac", "1", "-ar", str(target_sr),
+         "-f", "f32le", "-acodec", "pcm_f32le", "-"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg failed to decode {path!r}: "
+            f"{proc.stderr.decode('utf-8', 'ignore').strip()}"
+        )
+    y = np.frombuffer(proc.stdout, dtype="<f4").astype(np.float32)
+    return y, target_sr
+
+
+def load_audio(path, sr=16000):
+    """Load `path` to a mono float32 waveform at `sr` Hz (native rate if `sr` is None).
+
+    Format-robust replacement for ``librosa.load``: wav/flac/ogg are decoded by
+    libsndfile (soundfile); m4a/aac and any container libsndfile can't open are
+    decoded via ffmpeg. This avoids librosa's audioread m4a fallback, which is
+    deprecated and slated for removal in librosa 1.0 (and emits a warning per file).
+    """
+    try:
+        y, sr_native = sf.read(path, dtype="float32", always_2d=False)
+    except Exception:
+        return _ffmpeg_decode(path, sr)
+    if y.ndim > 1:                       # multi-channel -> mono (match librosa default)
+        y = y.mean(axis=1)
+    if sr is not None and sr_native != sr:
+        y = librosa.resample(y, orig_sr=sr_native, target_sr=sr)
+    return np.ascontiguousarray(y, dtype=np.float32), (sr if sr is not None else sr_native)
+
 
 def load_mel_spectrogram(
     wav_path: str,
@@ -9,7 +76,7 @@ def load_mel_spectrogram(
     target_frames_per_second: int = 1000,
     normalize: bool = True,
 ):
-    audio, sr = librosa.load(wav_path, sr=None)
+    audio, sr = load_audio(wav_path, sr=None)
 
     hop_length = int(sr / target_frames_per_second)
 
@@ -127,7 +194,7 @@ def auditory_frontend(
     # ==============================
     # 1. Load audio
     # ==============================
-    signal, sr = librosa.load(audio_path, sr=sr)
+    signal, sr = load_audio(audio_path, sr=sr)
 
     # ==============================
     # 2. Gammatone filterbank

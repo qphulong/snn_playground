@@ -15,14 +15,9 @@ start = time.time()
 # ============================================================
 # Dataset
 # ============================================================
-# wav_files = [
-#     # "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00003.wav",
-#     "datasets/vox1_fingerprint_analysis/id10797/id10797_00007/00004.wav"
-# ]
 
 wav_files = [
-    # "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00001.wav",
-    "datasets/vox1_cleaned/wav_dev/id10007/id10007_00002/00002.wav"
+    "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00001.m4a"
 ]
 
 print(f"Found {len(wav_files)} wav files")
