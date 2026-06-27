@@ -151,15 +151,9 @@ for _j in range(N_H):
     if _wsum > 0:
         w_ih[_rows, _j] *= NORM_LIMIT_EXC / _wsum
 
-# Inhibitory: formula-shaped, column-normalised to NORM_LIMIT_INH
+# Inhibitory: uniform random init in [0.01, 0.02] on connected positions
 w_hh = np.zeros((N_H, N_H))
-w_hh[_src_hh, _tgt_hh] = wmax_inh_matrix[_src_hh, _tgt_hh]
-for _j in range(N_H):
-    _col_mask = (_tgt_hh == _j)
-    _rows = _src_hh[_col_mask]
-    _wsum = w_hh[_rows, _j].sum()
-    if _wsum > 0:
-        w_hh[_rows, _j] *= NORM_LIMIT_INH / _wsum
+w_hh[_src_hh, _tgt_hh] = np.random.uniform(0.01, 0.02, size=_src_hh.shape[0])
 
 init_weights = {"in->hid": w_ih.copy(), "hid->hid": w_hh.copy()}
 
@@ -247,7 +241,8 @@ S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
 # Connectivity is distance-limited (polynomial decay, hard cutoff at R_INH).
 # Standard Hebbian STDP: pre-before-post strengthens inhibition,
 #                        post-before-pre weakens it.
-# Inhibitory current is NOT gated by trace_r (arrives unconditionally).
+# Inhibitory current is gated by trace_r_post: v_post -= w_inh * (1 - trace_r_post),
+# matching the excitatory soft-refractory gating (less drive to recently-spiked neurons).
 #
 stdp_inh_model = """
 w_inh          : 1
@@ -257,7 +252,7 @@ wmax_inh_syn   : 1
 Apre_inh_syn   : 1
 Apost_inh_syn  : 1
 """
-on_pre_inh  = (f"v_post -= w_inh\n"
+on_pre_inh  = (f"v_post -= w_inh * (1 - trace_r_post)\n"
                f"apre_inh += Apre_inh_syn\n"
                f"w_inh = clip(w_inh + apost_inh*(w_inh-{W_INH_MIN}), {W_INH_MIN}, wmax_inh_syn)")
 on_post_inh = (f"apost_inh += Apost_inh_syn\n"
@@ -269,7 +264,7 @@ S_hh.connect(i=_src_hh, j=_tgt_hh)
 S_hh.wmax_inh_syn  = wmax_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
-S_hh.w_inh         = w_hh[_src_hh, _tgt_hh]   # start at 0
+S_hh.w_inh         = w_hh[_src_hh, _tgt_hh]   # uniform [0.01, 0.02]
 
 net = Network(G_in, G_h, S_ih, S_hh)
 
@@ -382,7 +377,7 @@ for epoch_idx in range(EPOCHS):
         S_ih.apre  = 0
         S_ih.apost = 0
 
-        # Restore learned inhibitory weights (start at 0 for epoch 0).
+        # Restore learned inhibitory weights (uniform [0.01, 0.02] at epoch 0).
         S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
         S_hh.apre_inh  = 0
         S_hh.apost_inh = 0
