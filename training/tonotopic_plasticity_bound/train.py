@@ -22,7 +22,7 @@ wav_files = [
 
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 4
+EPOCHS   = 20
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -60,11 +60,15 @@ sigma_noise = 0.03 * second**(-0.5)
 taupre  = 20 * ms
 taupost = 20 * ms
 
+# -- Event-driven weight decay (applied at each pre/post spike) --
+tau_w_exc = 80 * second
+tau_w_inh = 80 * second
+
 # -- Excitatory weight bounds --
 wmin = 0.0
 
 # -- Excitatory synapse --
-WMAX_CENTER  = 1.0
+WMAX_CENTER  = 0.05
 APRE_CENTER  =  0.01
 APOST_CENTER = -0.012
 
@@ -216,15 +220,22 @@ G_h = NeuronGroup(
 # to the right groups. Then register it with the recorder below.
 #
 stdp_model = """
-w          : 1
+dw/dt      = -w / tau_w_exc : 1 (event-driven)
 dapre/dt   = -apre  / taupre  : 1 (event-driven)
 dapost/dt  = -apost / taupost : 1 (event-driven)
 wmax_syn   : 1
 Apre_syn   : 1
 Apost_syn  : 1
+ltp_acc    : 1
+ltd_acc    : 1
 """
-on_pre  = "v_post += w * (1 - trace_r_post)\napre += Apre_syn\nw = clip(w + apost*(w-wmin), wmin, wmax_syn)"
-on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
+on_pre  = ("v_post += w * (1 - trace_r_post)\n"
+           "apre += Apre_syn\n"
+           "ltd_acc += clip(w + apost*(w-wmin), wmin, wmax_syn) - w\n"
+           "w = clip(w + apost*(w-wmin), wmin, wmax_syn)")
+on_post = ("apost += Apost_syn\n"
+           "ltp_acc += clip(w + apre*(wmax_syn-w), wmin, wmax_syn) - w\n"
+           "w = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)")
 
 S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
 S_ih.connect(i=_src_ih, j=_tgt_ih)
@@ -245,7 +256,7 @@ S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
 # matching the excitatory soft-refractory gating (less drive to recently-spiked neurons).
 #
 stdp_inh_model = """
-w_inh          : 1
+dw_inh/dt      = -w_inh / tau_w_inh : 1 (event-driven)
 dapre_inh/dt   = -apre_inh  / taupre  : 1 (event-driven)
 dapost_inh/dt  = -apost_inh / taupost : 1 (event-driven)
 wmax_inh_syn   : 1
@@ -295,32 +306,20 @@ recorder.track_synapses("hid->hid", S_hh, _src_hh, _tgt_hh)
 
 recorder.build()   # attaches all Brian2 monitors — call once, after all registrations
 
-# ── Periodic L1 normalisation every 50 ms — excitatory and inhibitory ────────
-tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
-tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
-wmax_syn_arr     = np.array(S_ih.wmax_syn)
-wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
+# -- LTP/LTD diagnostic logging for one hidden neuron's incoming exc synapses --
+LOG_NEURON = 220
+mask_log   = np.where(tgt_ih == LOG_NEURON)[0]
 
 @network_operation(dt=500*ms, when='end')
-def normalize_weights():
-    # exc_sums = np.array([np.array(S_ih.w[tgt_masks_ih[j]]).sum() for j in range(N_H)])
-    # inh_sums = np.array([np.array(S_hh.w_inh[tgt_masks_hh[j]]).sum() for j in range(N_H)])
-    # print(f"  [norm t={defaultclock.t/ms:.0f}ms] exc col-sum: min={exc_sums.min():.4f} mean={exc_sums.mean():.4f} max={exc_sums.max():.4f} | "
-    #       f"inh col-sum: min={inh_sums.min():.4f} mean={inh_sums.mean():.4f} max={inh_sums.max():.4f}")
-    for j in range(N_H):
-        idx   = tgt_masks_ih[j]
-        w_col = np.array(S_ih.w[idx])
-        wsum  = w_col.sum()
-        if wsum > NORM_LIMIT_EXC:
-            S_ih.w[idx] = np.clip(w_col * NORM_LIMIT_EXC / wsum, wmin, wmax_syn_arr[idx])
-    for j in range(N_H):
-        idx   = tgt_masks_hh[j]
-        w_col = np.array(S_hh.w_inh[idx])
-        wsum  = w_col.sum()
-        if wsum > NORM_LIMIT_INH:
-            S_hh.w_inh[idx] = np.clip(w_col * NORM_LIMIT_INH / wsum, W_INH_MIN, wmax_inh_syn_arr[idx])
+def log_ltp_ltd():
+    ltp  = np.array(S_ih.ltp_acc[mask_log]).sum()
+    ltd  = np.array(S_ih.ltd_acc[mask_log]).sum()
+    wsum = np.array(S_ih.w[mask_log]).sum()
+    print(f"  [ltp/ltd t={defaultclock.t/ms:.0f}ms] neuron{LOG_NEURON} "
+          f"(n={mask_log.size}): LTP_sum={ltp:+.4f} LTD_sum={ltd:+.4f} "
+          f"net={ltp+ltd:+.4f} Σw={wsum:.4f}")
 
-net.add(normalize_weights)
+net.add(log_ltp_ltd)
 
 # Snapshot the clean initial state (clock=0, v=0, a=0, vth=vth_init,
 # trace_r=0, apre/apost=0, empty monitors).
