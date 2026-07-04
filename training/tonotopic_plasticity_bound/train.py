@@ -17,7 +17,7 @@ start = time.time()
 # ============================================================
 
 wav_files = [
-    "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00001.m4a"
+    "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00002.m4a"
 ]
 
 print(f"Found {len(wav_files)} wav files")
@@ -65,14 +65,14 @@ wmin = 0.0
 
 # -- Excitatory synapse --
 WMAX_CENTER  = 1.0
-APRE_CENTER  =  0.004
-APOST_CENTER = -0.0048
+APRE_CENTER  =  0.002
+APOST_CENTER = -0.0024
 
 # -- Inhibitory lateral synapse --
 W_INH_CENTER = 1.0
 W_INH_MIN    = 0.0
-APRE_INH     = 0.004
-APOST_INH    = -0.0048
+APRE_INH     = 0.0005
+APOST_INH    = -0.0006
 
 # -- Channel layout --
 N_CHANNELS    = 96
