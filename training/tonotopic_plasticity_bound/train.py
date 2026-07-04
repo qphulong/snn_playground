@@ -65,14 +65,14 @@ wmin = 0.0
 
 # -- Excitatory synapse --
 WMAX_CENTER  = 1.0
-APRE_CENTER  =  0.01
-APOST_CENTER = -0.012
+APRE_CENTER  =  0.004
+APOST_CENTER = -0.0048
 
 # -- Inhibitory lateral synapse --
 W_INH_CENTER = 1.0
 W_INH_MIN    = 0.0
-APRE_INH     = 0.0005
-APOST_INH    = -0.0006
+APRE_INH     = 0.004
+APOST_INH    = -0.0048
 
 # -- Channel layout --
 N_CHANNELS    = 96
@@ -348,7 +348,7 @@ for epoch_idx in range(EPOCHS):
         try:
             I, T = compute_spike_input_current(
                 audio_path,
-                scale=1.0,
+                scale=1.25,
                 num_filters=96,
                 sustained_per_band=2,
                 onset_per_band=1,
