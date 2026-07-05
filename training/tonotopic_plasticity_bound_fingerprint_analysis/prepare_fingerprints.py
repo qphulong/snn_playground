@@ -4,15 +4,12 @@ prepare_fingerprints.py
 Trains independent SNN runs (one per speaker/recording/part triplet) using the
 tonotopic_plasticity_bound architecture and saves weight fingerprints.
 
-Dataset layout expected:
-  datasets/vox1_fingerprint_analysis/
-    <person_id>/
-      <record_id>/
-        00001.wav  00002.wav  00003.wav  00004.wav
-
-Each (speaker, recording) pair yields two fingerprints:
-  Part A — trained on samples 00001.wav + 00002.wav
-  Part B — trained on samples 00003.wav + 00004.wav
+Audio is supplied via two nested dicts at the top of this file:
+  WAV_FILES_A[person][session] = path   → part "A" fingerprints (heatmap rows)
+  WAV_FILES_B[person][session] = path   → part "B" fingerprints (heatmap cols)
+Layout: 5 persons × 3 sessions each × 2 parts (A, B) × 1 audio file per part.
+Each (part, person, session) is trained into one fingerprint from its single file.
+A and B must share the same persons+sessions so heatmap.py's speaker blocks align.
 
 Training: NUM_EPOCHS per run.  Weight snapshots are collected inside
 normalize_weights() every 500 ms for epochs >= SNAPSHOT_FROM_EPOCH.
@@ -22,11 +19,11 @@ All runs share the same initial weight matrices (seed 42) so differences between
 fingerprints reflect audio content, not random initialisation.
 
 Output: fingerprints.npz
-  fingerprints  (N, 672, 672)  float32  — averaged weight matrices
+  fingerprints  (N, 384, 384)  float32  — averaged weight matrices
   person_ids    (N,)           str
   record_ids    (N,)           str
   parts         (N,)           str      — "A" or "B"
-  wav_files     (N, 2)         str
+  wav_files     (N,)           object   — list of paths per fingerprint
 
 Usage:
   cd <repo_root>
@@ -54,15 +51,83 @@ from src.utils.spike_encoding import compute_spike_input_current
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
 
-DATASET_ROOT = os.path.join(REPO_ROOT, 'datasets', 'vox1_fingerprint_analysis')
 OUT_PATH     = os.path.join(SCRIPT_DIR, 'fingerprints.npz')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audio inputs — fill in manually.  Structure:  WAV_FILES_{A,B}[person][session] = path
+#
+#   5 persons × 3 sessions each × 2 parts (A, B) × 1 audio file per part.
+#   Each (part, person, session) → one fingerprint trained on that single file.
+#
+# WAV_FILES_A and WAV_FILES_B MUST have identical persons+sessions so the part-A
+# (rows) and part-B (cols) fingerprints line up speaker-block by speaker-block in
+# heatmap.py (BLOCK = 3 sessions per speaker → 5 speakers).
+# Paths may be absolute or relative to the repo root (cwd = repo root when run).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Part A → 00001.m4a of each session; Part B → 00002.m4a of the SAME session.
+WAV_FILES_A = {
+    "id10604": {
+        "0yJ2UKJfCSM": "datasets/vox1/dev_04/id10604/0yJ2UKJfCSM/00001.m4a",
+        "4tlCKgb3LvU": "datasets/vox1/dev_04/id10604/4tlCKgb3LvU/00001.m4a",
+        "98kmA6XwM9U": "datasets/vox1/dev_04/id10604/98kmA6XwM9U/00001.m4a",
+    },
+    "id11005": {
+        "4Sw6odb03ig": "datasets/vox1/dev_06/id11005/4Sw6odb03ig/00001.m4a",
+        "6DTGOCa0qk0": "datasets/vox1/dev_06/id11005/6DTGOCa0qk0/00001.m4a",
+        "6YT0_aBfQI0": "datasets/vox1/dev_06/id11005/6YT0_aBfQI0/00001.m4a",
+    },
+    "id10204": {
+        "EKIF0zKoyss": "datasets/vox1/dev_02/id10204/EKIF0zKoyss/00001.m4a",
+        "GO4hi9004hg": "datasets/vox1/dev_02/id10204/GO4hi9004hg/00001.m4a",
+        "Hu9TdJRQYYo": "datasets/vox1/dev_02/id10204/Hu9TdJRQYYo/00001.m4a",
+    },
+    "id10257": {
+        "1uqrS4yUk34": "datasets/vox1/dev_02/id10257/1uqrS4yUk34/00001.m4a",
+        "K15lRgcitSw": "datasets/vox1/dev_02/id10257/K15lRgcitSw/00001.m4a",
+        "Ko-rW5RWuOo": "datasets/vox1/dev_02/id10257/Ko-rW5RWuOo/00001.m4a",
+    },
+    "id11248": {
+        "4iN6W9ajA-g": "datasets/vox1/dev_07/id11248/4iN6W9ajA-g/00001.m4a",
+        "5hBbAqRV_uc": "datasets/vox1/dev_07/id11248/5hBbAqRV_uc/00001.m4a",
+        "6kGwhudccdg": "datasets/vox1/dev_07/id11248/6kGwhudccdg/00001.m4a",
+    },
+}
+
+WAV_FILES_B = {
+    "id10604": {
+        "0yJ2UKJfCSM": "datasets/vox1/dev_04/id10604/0yJ2UKJfCSM/00002.m4a",
+        "4tlCKgb3LvU": "datasets/vox1/dev_04/id10604/4tlCKgb3LvU/00002.m4a",
+        "98kmA6XwM9U": "datasets/vox1/dev_04/id10604/98kmA6XwM9U/00002.m4a",
+    },
+    "id11005": {
+        "4Sw6odb03ig": "datasets/vox1/dev_06/id11005/4Sw6odb03ig/00002.m4a",
+        "6DTGOCa0qk0": "datasets/vox1/dev_06/id11005/6DTGOCa0qk0/00002.m4a",
+        "6YT0_aBfQI0": "datasets/vox1/dev_06/id11005/6YT0_aBfQI0/00002.m4a",
+    },
+    "id10204": {
+        "EKIF0zKoyss": "datasets/vox1/dev_02/id10204/EKIF0zKoyss/00002.m4a",
+        "GO4hi9004hg": "datasets/vox1/dev_02/id10204/GO4hi9004hg/00002.m4a",
+        "Hu9TdJRQYYo": "datasets/vox1/dev_02/id10204/Hu9TdJRQYYo/00002.m4a",
+    },
+    "id10257": {
+        "1uqrS4yUk34": "datasets/vox1/dev_02/id10257/1uqrS4yUk34/00002.m4a",
+        "K15lRgcitSw": "datasets/vox1/dev_02/id10257/K15lRgcitSw/00002.m4a",
+        "Ko-rW5RWuOo": "datasets/vox1/dev_02/id10257/Ko-rW5RWuOo/00002.m4a",
+    },
+    "id11248": {
+        "4iN6W9ajA-g": "datasets/vox1/dev_07/id11248/4iN6W9ajA-g/00002.m4a",
+        "5hBbAqRV_uc": "datasets/vox1/dev_07/id11248/5hBbAqRV_uc/00002.m4a",
+        "6kGwhudccdg": "datasets/vox1/dev_07/id11248/6kGwhudccdg/00002.m4a",
+    },
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hyperparameters  (match training/tonotopic_plasticity_bound/train.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-N_IN = 672   # 96 channels × 7 neurons/channel
-N_H  = 672
+N_IN = 384   # 96 channels × 4 neurons/channel
+N_H  = 384
 
 DT_SIM = 1 * ms
 
@@ -106,7 +171,7 @@ APOST_INH    = -0.0006
 
 # -- Channel layout --
 N_CHANNELS    = 96
-N_PER_CHANNEL = N_IN // N_CHANNELS   # 7
+N_PER_CHANNEL = N_IN // N_CHANNELS   # 4
 
 # -- Tonotopic plasticity (polynomial decay: max(0, 1-(d_channel/R)^p)) --
 R_EXC_CHANNEL = 16
@@ -117,8 +182,8 @@ NORM_LIMIT_EXC = 2
 NORM_LIMIT_INH = 0.9
 
 # -- Fingerprint collection --
-NUM_EPOCHS         = 2
-SNAPSHOT_FROM_EPOCH = 1   # collect snapshots from this epoch onward (0-indexed)
+NUM_EPOCHS         = 4
+SNAPSHOT_FROM_EPOCH = 2   # collect snapshots from this epoch onward (0-indexed)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-compute tonotopic plasticity matrices — excitatory
@@ -168,7 +233,8 @@ del _ch_h, _dist_ch_hh, _overlap_ch, _jaccard
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared initial weight matrices — same for all runs
 # Excitatory: formula-shaped, column-normalised to NORM_LIMIT_EXC
-# Inhibitory: formula-shaped, column-normalised to NORM_LIMIT_INH
+# Inhibitory: uniform random init in [0.01, 0.02] on connected positions
+#             (seeded at module load, so identical across all runs)
 # ─────────────────────────────────────────────────────────────────────────────
 
 W_IH_INIT = np.zeros((N_IN, N_H))
@@ -181,13 +247,7 @@ for _j in range(N_H):
         W_IH_INIT[_rows, _j] *= NORM_LIMIT_EXC / _wsum
 
 W_HH_INIT = np.zeros((N_H, N_H))
-W_HH_INIT[_src_hh, _tgt_hh] = wmax_inh_matrix[_src_hh, _tgt_hh]
-for _j in range(N_H):
-    _col_mask = (_tgt_hh == _j)
-    _rows = _src_hh[_col_mask]
-    _wsum = W_HH_INIT[_rows, _j].sum()
-    if _wsum > 0:
-        W_HH_INIT[_rows, _j] *= NORM_LIMIT_INH / _wsum
+W_HH_INIT[_src_hh, _tgt_hh] = np.random.uniform(0.01, 0.02, size=_src_hh.shape[0])
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build Brian2 network (once — shared across all runs)
@@ -253,7 +313,7 @@ wmax_inh_syn   : 1
 Apre_inh_syn   : 1
 Apost_inh_syn  : 1
 """
-on_pre_inh  = (f"v_post -= w_inh\n"
+on_pre_inh  = (f"v_post -= w_inh * (1 - trace_r_post)\n"
                f"apre_inh += Apre_inh_syn\n"
                f"w_inh = clip(w_inh + apost_inh*(w_inh-{W_INH_MIN}), {W_INH_MIN}, wmax_inh_syn)")
 on_post_inh = (f"apost_inh += Apost_inh_syn\n"
@@ -302,28 +362,40 @@ net.store('init')
 # Dataset discovery
 # ─────────────────────────────────────────────────────────────────────────────
 
-def discover_dataset(root):
+def build_entries():
+    """Flatten WAV_FILES_A / WAV_FILES_B (person → session → path) into runs.
+
+    One run per (part, person, session), each trained on its single audio file.
+    Entries are ordered PART-major, then person, then session — so the part-A
+    fingerprints (heatmap rows) and part-B fingerprints (heatmap cols) share the
+    same speaker/session ordering that heatmap.py's block logic assumes.
+
+    Missing paths / files are reported up front so typos fail fast.
+    """
+    # A and B must describe the same persons+sessions or the heatmap blocks misalign.
+    def _structure(tree):
+        return {p: sorted(tree[p]) for p in sorted(tree)}
+    if _structure(WAV_FILES_A) != _structure(WAV_FILES_B):
+        raise ValueError("WAV_FILES_A and WAV_FILES_B must have identical "
+                         "persons and sessions (only the file paths may differ).")
+
     entries = []
-    for person_id in sorted(os.listdir(root)):
-        person_dir = os.path.join(root, person_id)
-        if not os.path.isdir(person_dir):
-            continue
-        for record_id in sorted(os.listdir(person_dir)):
-            record_dir = os.path.join(person_dir, record_id)
-            if not os.path.isdir(record_dir):
-                continue
-            for part, filenames in (('A', ['00001.wav', '00002.wav']),
-                                    ('B', ['00003.wav', '00004.wav'])):
-                wav_paths = [os.path.join(record_dir, f) for f in filenames]
-                missing = [p for p in wav_paths if not os.path.exists(p)]
-                if missing:
-                    raise FileNotFoundError(f"Missing expected files: {missing}")
+    for part, tree in (('A', WAV_FILES_A), ('B', WAV_FILES_B)):
+        for person_id in sorted(tree):
+            for session_id in sorted(tree[person_id]):
+                path = tree[person_id][session_id]
+                if not path:
+                    raise ValueError(
+                        f"Part {part} {person_id}/{session_id}: empty path.")
+                if not os.path.exists(path):
+                    raise FileNotFoundError(
+                        f"Part {part} {person_id}/{session_id}: file not found: {path}")
                 entries.append({
                     'person_id': person_id,
-                    'record_id': record_id,
+                    'record_id': session_id,
                     'part':      part,
-                    'wav_files': wav_paths,
-                    'label':     f"{person_id}/{record_id}/part-{part}",
+                    'wav_files': [path],
+                    'label':     f"{person_id}/{session_id}/part-{part}",
                 })
     return entries
 
@@ -351,15 +423,15 @@ def train_fingerprint(wav_files, label):
             try:
                 I, T = compute_spike_input_current(
                     wav_path,
-                    scale=1.0,
+                    scale=1.25,
                     num_filters=96,
-                    sustained_per_band=4,
-                    onset_per_band=2,
+                    sustained_per_band=2,
+                    onset_per_band=1,
                     phase_per_band=1,
                     sust_gain=0.3,
                     onset_gain=2.25,
                     phase_gain=0.45,
-                    sust_spread_min=0.7,
+                    sust_spread_min=0.8,
                     sust_spread_max=1.0,
                 )
             except Exception as e:
@@ -399,10 +471,12 @@ def train_fingerprint(wav_files, label):
 
 t_start = time.time()
 
-entries = discover_dataset(DATASET_ROOT)
+entries = build_entries()
 n = len(entries)
-print(f"Discovered {n} run(s) across "
-      f"{len(set(e['person_id'] for e in entries))} person(s).\n")
+n_persons = len(set(e['person_id'] for e in entries))
+print(f"Prepared {n} run(s): {n_persons} person(s), "
+      f"parts A={sum(e['part']=='A' for e in entries)} "
+      f"B={sum(e['part']=='B' for e in entries)}.\n")
 
 fingerprints  = []
 person_ids    = []
@@ -427,7 +501,7 @@ np.savez(
     person_ids   = np.array(person_ids),
     record_ids   = np.array(record_ids),
     parts        = np.array(parts),
-    wav_files    = np.array(wav_files_arr),
+    wav_files    = np.array(wav_files_arr, dtype=object),
 )
 
 print(f"\n{'='*60}")
