@@ -60,6 +60,15 @@ sigma_noise = 0.03 * second**(-0.5)
 taupre  = 20 * ms
 taupost = 20 * ms
 
+# -- Triplet STDP (excitatory; Pfister-Gerstner, added on top of the pair rule) --
+# Slow detector traces r2 (pre) and o2 (post) make LTP/LTD depend on a recent
+# *previous* spike of the same kind (frequency-dependent, BCM-like).
+# Set both A3 centres to 0 to recover the plain pair-STDP behaviour exactly.
+tau_x         = 100 * ms   # slow presynaptic detector r2
+tau_y         = 125 * ms   # slow postsynaptic detector o2
+A3PRE_CENTER  =  0.004     # triplet LTP amplitude (pre-post-post), > 0
+A3POST_CENTER = -0.002     # triplet LTD amplitude (post-pre-pre), < 0
+
 # -- Excitatory weight bounds --
 wmin = 0.0
 
@@ -101,9 +110,11 @@ _topo_exc = np.maximum(0.0, 1.0 - (_dist_ch / R_EXC_CHANNEL) ** p_EXC)
 _mask_ih  = _dist_ch <= R_EXC_CHANNEL
 _src_ih, _tgt_ih = np.where(_mask_ih)
 
-wmax_matrix  = WMAX_CENTER  * _topo_exc
-Apre_matrix  = APRE_CENTER  * _topo_exc
-Apost_matrix = APOST_CENTER * _topo_exc
+wmax_matrix   = WMAX_CENTER   * _topo_exc
+Apre_matrix   = APRE_CENTER   * _topo_exc
+Apost_matrix  = APOST_CENTER  * _topo_exc
+A3pre_matrix  = A3PRE_CENTER  * _topo_exc   # triplet LTP amplitude (topo-scaled)
+A3post_matrix = A3POST_CENTER * _topo_exc   # triplet LTD amplitude (topo-scaled)
 del _ch_i, _ch_j, _dist_ch, _topo_exc
 
 # ============================================================
@@ -219,21 +230,40 @@ stdp_model = """
 w          : 1
 dapre/dt   = -apre  / taupre  : 1 (event-driven)
 dapost/dt  = -apost / taupost : 1 (event-driven)
+dr1/dt     = -r1 / taupre      : 1 (event-driven)
+dr2/dt     = -r2 / tau_x       : 1 (event-driven)
+do1/dt     = -o1 / taupost     : 1 (event-driven)
+do2/dt     = -o2 / tau_y       : 1 (event-driven)
 wmax_syn   : 1
 Apre_syn   : 1
 Apost_syn  : 1
+A3pre_syn  : 1
+A3post_syn : 1
 """
-on_pre  = "v_post += w * (1 - trace_r_post)\napre += Apre_syn\nw = clip(w + apost*(w-wmin), wmin, wmax_syn)"
-on_post = "apost += Apost_syn\nw = clip(w + apre*(wmax_syn-w), wmin, wmax_syn)"
+# Pair terms kept verbatim; triplet term appended. Slow traces (r2, o2) are read
+# BEFORE being incremented, so they carry the value from the *previous* spike.
+#   on_pre  LTD: pair apost*(w-wmin)     + triplet A3post_syn*o1*r2*(w-wmin)
+#   on_post LTP: pair apre*(wmax_syn-w)  + triplet A3pre_syn *r1*o2*(wmax_syn-w)
+on_pre  = ("v_post += w * (1 - trace_r_post)\n"
+           "apre += Apre_syn\n"
+           "w = clip(w + apost*(w-wmin) + A3post_syn*o1*r2*(w-wmin), wmin, wmax_syn)\n"
+           "r1 += 1\n"
+           "r2 += 1")
+on_post = ("apost += Apost_syn\n"
+           "w = clip(w + apre*(wmax_syn-w) + A3pre_syn*r1*o2*(wmax_syn-w), wmin, wmax_syn)\n"
+           "o1 += 1\n"
+           "o2 += 1")
 
 S_ih = Synapses(G_in, G_h, model=stdp_model, on_pre=on_pre, on_post=on_post)
 S_ih.connect(i=_src_ih, j=_tgt_ih)
 src_ih = np.array(S_ih.i)
 tgt_ih = np.array(S_ih.j)
 
-S_ih.wmax_syn  = wmax_matrix[src_ih, tgt_ih]
-S_ih.Apre_syn  = Apre_matrix[src_ih, tgt_ih]
-S_ih.Apost_syn = Apost_matrix[src_ih, tgt_ih]
+S_ih.wmax_syn   = wmax_matrix[src_ih, tgt_ih]
+S_ih.Apre_syn   = Apre_matrix[src_ih, tgt_ih]
+S_ih.Apost_syn  = Apost_matrix[src_ih, tgt_ih]
+S_ih.A3pre_syn  = A3pre_matrix[src_ih, tgt_ih]
+S_ih.A3post_syn = A3post_matrix[src_ih, tgt_ih]
 
 # ── Inhibitory lateral synapse: hidden → hidden (tonotopic, STDP) ─────────────
 #
@@ -376,6 +406,7 @@ for epoch_idx in range(EPOCHS):
         S_ih.w    = w_ih[src_ih, tgt_ih]
         S_ih.apre  = 0
         S_ih.apost = 0
+        S_ih.r1 = 0; S_ih.r2 = 0; S_ih.o1 = 0; S_ih.o2 = 0   # triplet detectors
 
         # Restore learned inhibitory weights (uniform [0.01, 0.02] at epoch 0).
         S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
