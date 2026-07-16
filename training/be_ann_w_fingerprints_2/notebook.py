@@ -2,7 +2,7 @@
 # ============================== CONFIG ==============================
 import os
 os.environ["MALLOC_ARENA_MAX"] = "2"
-import os, math, glob, time, random, ctypes
+import os, math, glob, time, random, gc, ctypes
 import numpy as np
 import torch
 import torch.nn as nn
@@ -455,15 +455,50 @@ def rss_gb():
         pages = int(f.read().split()[1])
     return pages * os.sysconf("SC_PAGE_SIZE") / 1e9
 
-_libc = ctypes.CDLL("libc.so.6")
+class _Mallinfo2(ctypes.Structure):
+    _fields_ = [(f, ctypes.c_size_t) for f in
+                ("arena", "ordblks", "smblks", "hblks", "hblkhd",
+                 "usmblks", "fsmblks", "uordblks", "fordblks", "keepcost")]
 
-def trim_malloc():
-    """glibc's malloc keeps freed heap arenas resident (never munmap'd back to the OS)
-    after the thousands of small CPU tensor allocs/frees per epoch (augment, .float()
-    casts, index_select, GPU->CPU transfers). MALLOC_ARENA_MAX only caps arena *count*;
-    it doesn't reclaim freed-but-retained pages. Call this once/epoch to actually give
-    RSS back, or it ratchets up ~1GB/epoch until the container OOMs."""
-    _libc.malloc_trim(0)
+try:
+    _libc = ctypes.CDLL("libc.so.6")
+    _libc.mallinfo2.restype = _Mallinfo2
+    _libc.mallinfo2.argtypes = []
+    def _heap_stats():
+        m = _libc.mallinfo2()
+        return dict(arena_mb=m.arena / 1e6, in_use_mb=m.uordblks / 1e6,
+                    free_retained_mb=m.fordblks / 1e6, mmap_mb=m.hblkhd / 1e6)
+except AttributeError:
+    _heap_stats = None   # glibc too old for mallinfo2 (pre-2.33)
+
+_prev_heap = {}
+
+def leak_probe(tag):
+    """tracemalloc showed only noise (it can't see ATen's CPU tensor storage - that's
+    allocated via raw malloc, bypassing Python's pymalloc entirely). mallinfo2() reads
+    the real glibc heap: if `in_use_mb` (uordblks, bytes glibc considers actually
+    allocated) grows ~1GB/epoch, that's a genuine native leak, not fragmentation
+    (fragmentation would show up as `free_retained_mb` growing while `in_use_mb` stays
+    flat - and malloc_trim(0) already proved trim doesn't reclaim anything here)."""
+    n_tensors = sum(1 for o in gc.get_objects() if torch.is_tensor(o))
+    n_arrays  = sum(1 for o in gc.get_objects() if isinstance(o, np.ndarray))
+    msg = f"    [leak-probe:{tag}] live_tensors={n_tensors}  live_ndarrays={n_arrays}"
+    if _heap_stats is not None:
+        h = _heap_stats()
+        prev = _prev_heap.get(tag)
+        if prev is not None:
+            d = {k: h[k] - prev[k] for k in h}
+            msg += (f"  heap(MB) arena={h['arena_mb']:.1f}({d['arena_mb']:+.1f}) "
+                    f"in_use={h['in_use_mb']:.1f}({d['in_use_mb']:+.1f}) "
+                    f"free_retained={h['free_retained_mb']:.1f}({d['free_retained_mb']:+.1f}) "
+                    f"mmap={h['mmap_mb']:.1f}({d['mmap_mb']:+.1f})")
+        else:
+            msg += (f"  heap(MB) arena={h['arena_mb']:.1f} in_use={h['in_use_mb']:.1f} "
+                    f"free_retained={h['free_retained_mb']:.1f} mmap={h['mmap_mb']:.1f}")
+        _prev_heap[tag] = h
+    else:
+        msg += "  (mallinfo2 unavailable - glibc < 2.33)"
+    print(msg)
 
 def _core(net):
     return net.module if isinstance(net, nn.DataParallel) else net
@@ -563,12 +598,12 @@ def train():
             scaler.step(opt); scaler.update()
             running += loss.item(); nb += 1
         sched.step()
-        trim_malloc()
         r1 = rss_gb()
+        leak_probe("train")
 
         sf, lk = evaluate(net, val_bank, yt, RIDt, HAS_DUP)
-        trim_malloc()
         r2 = rss_gb()
+        leak_probe("eval")
         print(f"    dRSS train={r1-r0:+.2f}GB  eval={r2-r1:+.2f}GB")
         
         improved = sf["eer"] < best_eer
