@@ -2,7 +2,7 @@
 # ============================== CONFIG ==============================
 import os
 os.environ["MALLOC_ARENA_MAX"] = "2"
-import os, math, glob, time, random
+import os, math, glob, time, random, ctypes
 import numpy as np
 import torch
 import torch.nn as nn
@@ -455,6 +455,16 @@ def rss_gb():
         pages = int(f.read().split()[1])
     return pages * os.sysconf("SC_PAGE_SIZE") / 1e9
 
+_libc = ctypes.CDLL("libc.so.6")
+
+def trim_malloc():
+    """glibc's malloc keeps freed heap arenas resident (never munmap'd back to the OS)
+    after the thousands of small CPU tensor allocs/frees per epoch (augment, .float()
+    casts, index_select, GPU->CPU transfers). MALLOC_ARENA_MAX only caps arena *count*;
+    it doesn't reclaim freed-but-retained pages. Call this once/epoch to actually give
+    RSS back, or it ratchets up ~1GB/epoch until the container OOMs."""
+    _libc.malloc_trim(0)
+
 def _core(net):
     return net.module if isinstance(net, nn.DataParallel) else net
 
@@ -553,9 +563,11 @@ def train():
             scaler.step(opt); scaler.update()
             running += loss.item(); nb += 1
         sched.step()
+        trim_malloc()
         r1 = rss_gb()
 
         sf, lk = evaluate(net, val_bank, yt, RIDt, HAS_DUP)
+        trim_malloc()
         r2 = rss_gb()
         print(f"    dRSS train={r1-r0:+.2f}GB  eval={r2-r1:+.2f}GB")
         
