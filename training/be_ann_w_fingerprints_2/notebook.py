@@ -598,12 +598,16 @@ def train():
             scaler.step(opt); scaler.update()
             running += loss.item(); nb += 1
         sched.step()
+        n_cycles = gc.collect()          # break any autograd-graph reference cycles
         r1 = rss_gb()
         leak_probe("train")
+        print(f"    gc.collect() after TRAIN freed {n_cycles} cyclic objects")
 
         sf, lk = evaluate(net, val_bank, yt, RIDt, HAS_DUP)
+        n_cycles = gc.collect()
         r2 = rss_gb()
         leak_probe("eval")
+        print(f"    gc.collect() after EVAL freed {n_cycles} cyclic objects")
         print(f"    dRSS train={r1-r0:+.2f}GB  eval={r2-r1:+.2f}GB")
         
         improved = sf["eer"] < best_eer
