@@ -63,7 +63,15 @@ BEST_CKPT = os.path.join(CKPT_DIR, f"best_{MODE_TAG}.pt")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_GPU  = torch.cuda.device_count()
-USE_DP = N_GPU > 1
+# nn.DataParallel.forward() spawns a fresh pair of OS threads via parallel_apply() on
+# EVERY batch (not once) when N_GPU>1. That matched the leak signature exactly: real
+# malloc'd bytes growing every epoch, invisible to gc/tracemalloc/tensor-count (native
+# per-thread caches from a short-lived thread's exit aren't Python objects at all), not
+# glibc fragmentation (malloc_trim had zero effect), not mmap (flat), not ref cycles
+# (gc.collect() froze 0). Forcing single-GPU removes the per-batch thread spawn entirely.
+# Flip to True only if you also switch to DistributedDataParallel (process-based, no
+# per-call threading) - plain DataParallel is not worth the leak for the 2x throughput.
+USE_DP = False   # was `N_GPU > 1` - disabled, see leak note above
 print(f"device={device}  N_GPU={N_GPU}  DataParallel={USE_DP}  MODE_TAG={MODE_TAG}")
 
 
