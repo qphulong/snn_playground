@@ -12,14 +12,14 @@ Each (part, person, session) is trained into one fingerprint from its single fil
 A and B must share the same persons+sessions so heatmap.py's speaker blocks align.
 
 Training: NUM_EPOCHS per run.  Weight snapshots are collected inside
-normalize_weights() every 500 ms for epochs >= SNAPSHOT_FROM_EPOCH.
+normalize_weights() every 100 ms for epochs >= SNAPSHOT_FROM_EPOCH.
 The fingerprint is the mean of all collected snapshots (float32).
 
 All runs share the same initial weight matrices (seed 42) so differences between
 fingerprints reflect audio content, not random initialisation.
 
 Output: fingerprints.npz
-  fingerprints  (N, 384, 384)  float32  — averaged weight matrices
+  fingerprints  (N, 192, 192)  float32  — averaged weight matrices
   person_ids    (N,)           str
   record_ids    (N,)           str
   parts         (N,)           str      — "A" or "B"
@@ -126,8 +126,8 @@ WAV_FILES_B = {
 # Hyperparameters  (match training/tonotopic_plasticity_bound/train.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-N_IN = 384   # 96 channels × 4 neurons/channel
-N_H  = 384
+N_IN = 192   # 64 channels × 3 neurons/channel
+N_H  = 192
 
 DT_SIM = 1 * ms
 
@@ -179,20 +179,20 @@ APRE_INH     = 0.004
 APOST_INH    = -0.0048
 
 # -- Channel layout --
-N_CHANNELS    = 96
+N_CHANNELS    = 64
 N_PER_CHANNEL = N_IN // N_CHANNELS   # 4
 
 # -- Tonotopic plasticity (polynomial decay: max(0, 1-(d_channel/R)^p)) --
-R_EXC_CHANNEL = 16
+R_EXC_CHANNEL = 11
 p_EXC         = 3
 
 # -- Homeostatic normalisation --
-NORM_LIMIT_EXC = 2
-NORM_LIMIT_INH = 0.9
+NORM_LIMIT_EXC = 1.0455
+NORM_LIMIT_INH = 0.4656
 
 # -- Fingerprint collection --
-NUM_EPOCHS         = 4
-SNAPSHOT_FROM_EPOCH = 2   # collect snapshots from this epoch onward (0-indexed)
+NUM_EPOCHS         = 8
+SNAPSHOT_FROM_EPOCH = 4   # collect snapshots from this epoch onward (0-indexed)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pre-compute tonotopic plasticity matrices — excitatory
@@ -357,7 +357,7 @@ S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
 S_hh.w_inh         = W_HH_INIT[_src_hh, _tgt_hh]
 
-# ── Periodic L1 normalisation every 500 ms + snapshot collection ──────────────
+# ── Periodic L1 normalisation every 100 ms + snapshot collection ──────────────
 tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
 tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
 wmax_syn_arr     = np.array(S_ih.wmax_syn)
@@ -365,7 +365,7 @@ wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
 _run_state = {"epoch": 0, "snapshots": []}
 
-@network_operation(dt=500*ms, when='end')
+@network_operation(dt=100*ms, when='end')
 def normalize_weights():
     for j in range(N_H):
         idx   = tgt_masks_ih[j]
@@ -436,7 +436,7 @@ def build_entries():
 def train_fingerprint(wav_files, label):
     """Train one SNN run and return the averaged weight fingerprint.
 
-    Weight snapshots are collected inside normalize_weights() every 500 ms for
+    Weight snapshots are collected inside normalize_weights() every 100 ms for
     epochs >= SNAPSHOT_FROM_EPOCH. The fingerprint is the mean of all snapshots.
 
     Returns np.ndarray of shape (N_IN, N_H), dtype float32.
@@ -455,14 +455,14 @@ def train_fingerprint(wav_files, label):
                     wav_path,
                     scale=1,
                     num_filters=96,
-                    sustained_per_band=2,
+                    sustained_per_band=1,
                     onset_per_band=1,
                     phase_per_band=1,
                     sust_gain=0.3,
                     onset_gain=2.25,
                     phase_gain=0.45,
-                    sust_spread_min=0.8,
-                    sust_spread_max=1.0,
+                    sust_spread_min=1,
+                    sust_spread_max=1,
                 )
             except Exception as e:
                 print(f"    [skip {os.path.basename(wav_path)}: {e}]")

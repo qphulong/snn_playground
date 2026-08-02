@@ -22,15 +22,15 @@ wav_files = [
 
 print(f"Found {len(wav_files)} wav files")
 
-EPOCHS   = 4
+EPOCHS   = 8
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
 # Hyperparameters
 # ============================================================
 
-N_IN = 384   # 96 channels × 4 neurons/channel
-N_H  = 384
+N_IN = 192   # 64 channels × 3 neurons/channel
+N_H  = 192
 
 DT_SIM = 1 * ms
 
@@ -84,16 +84,16 @@ APRE_INH     = 0.004
 APOST_INH    = -0.0048
 
 # -- Channel layout --
-N_CHANNELS    = 96
+N_CHANNELS    = 64
 N_PER_CHANNEL = N_IN // N_CHANNELS   # 4
 
 # -- Tonotopic plasticity (polynomial decay: max(0, 1-(d_channel/R)^p)) --
-R_EXC_CHANNEL = 16
+R_EXC_CHANNEL = 11
 p_EXC         = 3
 
 # -- Homeostatic normalisation --
-NORM_LIMIT_EXC = 2
-NORM_LIMIT_INH = 0.9
+NORM_LIMIT_EXC = 1.0455
+NORM_LIMIT_INH = 0.4656
 
 
 # ============================================================
@@ -331,7 +331,7 @@ tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
 wmax_syn_arr     = np.array(S_ih.wmax_syn)
 wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
-@network_operation(dt=500*ms, when='end')
+@network_operation(dt=100*ms, when='end')
 def normalize_weights():
     # exc_sums = np.array([np.array(S_ih.w[tgt_masks_ih[j]]).sum() for j in range(N_H)])
     # inh_sums = np.array([np.array(S_hh.w_inh[tgt_masks_hh[j]]).sum() for j in range(N_H)])
@@ -380,14 +380,14 @@ for epoch_idx in range(EPOCHS):
                 audio_path,
                 scale=1.0,
                 num_filters=96,
-                sustained_per_band=2,
+                sustained_per_band=1,
                 onset_per_band=1,
                 phase_per_band=1,
                 sust_gain=0.3,
                 onset_gain=2.25,
                 phase_gain=0.45,
-                sust_spread_min=0.8,
-                sust_spread_max=1.0,
+                sust_spread_min=1,
+                sust_spread_max=1,
             )
         except Exception as e:
             print(f"    Error encoding audio: {e}")
