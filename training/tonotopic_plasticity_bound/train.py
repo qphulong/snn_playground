@@ -25,6 +25,12 @@ WINDOW_MS = 200   # piece length
 HOP_MS    = 100   # slide between consecutive pieces (50% overlap)
 N_REPEATS = 8    # repeated exposures per piece == "samples" within its epoch
 
+# -- Input encoding gains (passed to compute_spike_input_current) --
+SUST_GAIN  = 0.3    # sustained-energy neurons
+ONSET_GAIN = 3.0    # onset (transient) neurons — bumped up from 2.25 to fire more;
+                     # check vizs/global/raster_input_full_clip.png (crimson) and retune
+PHASE_GAIN = 1.0    # phase-locking neurons (unused: phase_per_band=0 below)
+
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
@@ -373,8 +379,8 @@ try:
         sustained_per_band=1,
         onset_per_band=1,
         phase_per_band=0,
-        sust_gain=0.3,
-        onset_gain=2.25,
+        sust_gain=SUST_GAIN,
+        onset_gain=ONSET_GAIN,
         sust_spread_min=1,
         sust_spread_max=1,
     )
@@ -387,6 +393,37 @@ N_PIECES = (T_sim - WINDOW_MS) // HOP_MS + 1
 if N_PIECES < 1:
     raise ValueError(f"Clip ({T_sim} ms) shorter than one window ({WINDOW_MS} ms)")
 print(f"{N_PIECES} pieces of {WINDOW_MS}ms (hop {HOP_MS}ms), {N_REPEATS} repeats each")
+
+
+# ============================================================
+# Global input-only preview pass (no learning, no hidden layer).
+#
+# Runs the WHOLE clip once through an isolated probe copy of the input
+# layer, before any piece-wise training starts. This never touches G_in,
+# G_h, S_ih, S_hh, or the 'init' snapshot used by training — it is a
+# separate NeuronGroup/Network built solely to produce a global raster.
+# ============================================================
+
+G_in_probe = NeuronGroup(
+    N_IN, eqs_in,
+    threshold="v > v_th_in",
+    reset="v=0; a+=beta",
+    refractory=2 * ms,
+    method="euler"
+)
+G_in_probe.namespace["I_timed"] = TimedArray(I_sim.T.astype(float), dt=DT_SIM)
+mon_probe = SpikeMonitor(G_in_probe)
+Network(G_in_probe, mon_probe).run(T_sim * DT_SIM)
+
+np.savez_compressed(
+    os.path.join(SAVE_DIR, "global_input_raster.npz"),
+    raster_i=np.array(mon_probe.i, dtype=np.int32),
+    raster_t=np.array(mon_probe.t / ms, dtype=np.float32),
+    n_neurons=np.int32(N_IN),
+    duration_ms=np.float32(T_sim),
+)
+print(f"Global input raster: {len(mon_probe.i)} spikes over {T_sim}ms "
+      f"-> global_input_raster.npz")
 
 
 # ============================================================
@@ -481,6 +518,11 @@ for piece_idx in range(N_PIECES):
             },
             init_weights=init_weights if rep == 0 else None,
         )
+
+    # ── Save this piece's continuous membrane-potential trace (spans all
+    #    N_REPEATS repeats) once, rather than duplicating it into every
+    #    repeat's history_epoch_NNN.npz ────────────────────────────────────────
+    recorder.save_piece_membrane(piece_save_dir)
 
 
 # ============================================================

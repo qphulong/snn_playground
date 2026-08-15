@@ -80,12 +80,29 @@ OUT_DIR = os.path.join(SCRIPT_DIR, "vizs")
 os.makedirs(OUT_DIR, exist_ok=True)
 print(f"Output base: {OUT_DIR}\n")
 
-saved = []
+saved   = []
+skipped = []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _out_path(name, epoch_dir=None):
+    out = OUT_DIR if epoch_dir is None else os.path.join(OUT_DIR, epoch_dir)
+    return os.path.join(out, name)
+
+
+def _already_saved(name, epoch_dir=None):
+    """True if this PNG was produced by a previous run. Callers check this
+    BEFORE building the figure (not just before writing it) so a re-run can
+    skip the expensive matplotlib rendering entirely, not just the file I/O."""
+    return os.path.exists(_out_path(name, epoch_dir))
+
+
+def _skip(name, epoch_dir=None):
+    skipped.append(_out_path(name, epoch_dir))
+
 
 def save(fig, name, epoch_dir=None):
     out = OUT_DIR if epoch_dir is None else os.path.join(OUT_DIR, epoch_dir)
@@ -155,6 +172,9 @@ def _get(data, name, field):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _plot_weight_matrix(W, title, filename, epoch_dir=None):
+    if _already_saved(filename, epoch_dir):
+        _skip(filename, epoch_dir)
+        return
     w_min, w_max = W.min(), W.max()
     if w_max <= w_min:
         w_max = w_min + 1e-8
@@ -188,6 +208,9 @@ def _plot_weight_matrix(W, title, filename, epoch_dir=None):
 
 
 def _plot_firing_rate(rates, title, filename, color="darkorange", epoch_dir=None, handles=None):
+    if _already_saved(filename, epoch_dir):
+        _skip(filename, epoch_dir)
+        return
     n = len(rates)
     fig, ax = plt.subplots(figsize=(12, 4))
     ax.bar(np.arange(n), rates, width=1.0, color=color, linewidth=0)
@@ -217,12 +240,16 @@ def _plot_spike_raster(data, keys, name, epoch_idx, epoch_dir, color):
     color_array, handles = _neuron_type_colors(name, n_neurons)
 
     for s in _sample_indices(n_total):
+        fname = f"raster_{_pfx(name)}_rep{s:03d}.png"
+        if _already_saved(fname, epoch_dir):
+            _skip(fname, epoch_dir)
+            continue
         sp_i = raster_i[s]
         sp_t = raster_t[s]
         fig, ax = plt.subplots(figsize=(12, 5))
         if len(sp_t) > 0:
             c = color_array[sp_i.astype(int)] if color_array is not None else color
-            ax.scatter(sp_t, sp_i, s=0.5, c=c, linewidths=0, rasterized=True)
+            ax.scatter(sp_t, sp_i, s=3, c=c, linewidths=0, rasterized=True)
         ax.set_title(
             f"Spike Raster — {name}  |  {_ptitle(epoch_idx)}  ({len(sp_t):,} spikes)",
             fontsize=12, fontweight="bold"
@@ -235,7 +262,7 @@ def _plot_spike_raster(data, keys, name, epoch_idx, epoch_dir, color):
         if handles is not None:
             ax.legend(handles=handles, loc="upper right", fontsize=9, markerscale=2)
         plt.tight_layout()
-        save(fig, f"raster_{_pfx(name)}_rep{s:03d}.png", epoch_dir=epoch_dir)
+        save(fig, fname, epoch_dir=epoch_dir)
 
 
 def _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color):
@@ -249,6 +276,10 @@ def _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color):
     bar_color = color_array if color_array is not None else color
 
     for s in _sample_indices(n_total):
+        fname = f"spike_count_{_pfx(name)}_rep{s:03d}.png"
+        if _already_saved(fname, epoch_dir):
+            _skip(fname, epoch_dir)
+            continue
         sp_i = raster_i[s]
         counts = (np.bincount(sp_i.astype(np.int32), minlength=n_neurons)
                   if len(sp_i) > 0 else np.zeros(n_neurons, dtype=np.int32))
@@ -266,7 +297,7 @@ def _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color):
         if handles is not None:
             ax.legend(handles=handles, loc="upper right", fontsize=9)
         plt.tight_layout()
-        save(fig, f"spike_count_{_pfx(name)}_rep{s:03d}.png", epoch_dir=epoch_dir)
+        save(fig, fname, epoch_dir=epoch_dir)
 
 
 def _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color):
@@ -305,39 +336,53 @@ def _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color):
             )
 
 
-def _plot_membrane_potential(data, keys, name, epoch_idx, epoch_dir):
-    v_key  = _k(name, "vmon_v_all")
-    t_key  = _k(name, "vmon_t_all")
-    if v_key not in keys or t_key not in keys:
+def _plot_piece_membrane_potential(piece_path, piece_label):
+    """Plot each piece's ONE continuous membrane-potential trace (spans all of
+    that piece's repeats), read from piece_path/membrane_potential.npz — written
+    once per piece by recorder.save_piece_membrane() for groups configured with
+    `membrane_potential_scope: piece`. No-op if that file isn't present (e.g. for
+    groups still using the default per-epoch scope, or older recordings)."""
+    npz_path = os.path.join(piece_path, "membrane_potential.npz")
+    if not os.path.exists(npz_path):
         return
 
-    neurons   = _get(data, name, "vmon_indices")
-    t_all     = _get(data, name, "vmon_t_all")
-    windows   = _get(data, name, "vmon_windows")
-    n_total   = len(t_all)
-    pfx       = _pfx(name)
+    data = np.load(npz_path, allow_pickle=True)
+    keys = set(data.files)
 
-    # Collect all variable arrays that were recorded for this group
-    # Keys look like: {pfx}__vmon_{var}_all
-    var_keys = {}
-    for k in keys:
-        tag = f"{_pfx(name)}__vmon_"
-        if k.startswith(tag) and k.endswith("_all"):
-            var = k[len(tag):-4]   # strip prefix and _all suffix
-            if var != "t":         # t_all handled separately
-                var_keys[var] = k
+    for name in group_cfg:
+        t_key = _k(name, "vmon_t")
+        if t_key not in keys:
+            continue
 
-    if not var_keys:
-        return
+        pfx     = _pfx(name)
+        t       = _get(data, name, "vmon_t")
+        neurons = _get(data, name, "vmon_indices")
+        windows = _get(data, name, "vmon_windows")
 
-    for s in _sample_indices(n_total):
-        t = t_all[s]
+        # Collect all variable arrays recorded for this group: {pfx}__vmon_{var}
+        # (excluding the non-variable bookkeeping keys t/indices/windows)
+        tag = f"{pfx}__vmon_"
+        _non_var = {"t", "indices", "windows"}
+        var_keys = {
+            k[len(tag):]: k for k in keys
+            if k.startswith(tag) and k[len(tag):] not in _non_var
+        }
+        if not var_keys:
+            continue
+
+        vmon_epoch_dir = os.path.join(piece_label, "membrane_potential")
 
         for k_idx, nid in enumerate(neurons):
             t_start = float(windows[k_idx, 1]) if windows[k_idx, 1] >= 0 else -1.0
             t_end   = float(windows[k_idx, 2]) if windows[k_idx, 2] >= 0 else -1.0
-            mask    = _window_mask(t, t_start, t_end)
-            t_w     = t[mask]
+            win_suffix = (f"_window{t_start:.0f}_{t_end:.0f}ms" if t_start >= 0 else "")
+            fname = f"vmon_{pfx}_fullpiece_neuron{nid:04d}{win_suffix}.png"
+            if _already_saved(fname, vmon_epoch_dir):
+                _skip(fname, vmon_epoch_dir)
+                continue
+
+            mask = _window_mask(t, t_start, t_end)
+            t_w  = t[mask]
 
             n_vars = len(var_keys)
             fig, axes = plt.subplots(n_vars, 1, figsize=(11, 3 * n_vars), sharex=True,
@@ -345,7 +390,7 @@ def _plot_membrane_potential(data, keys, name, epoch_idx, epoch_dir):
             win_str = f"  [{t_start:.0f}–{t_end:.0f} ms]" if t_start >= 0 else ""
             fig.suptitle(
                 f"State Variables — {name}, Neuron {nid}  |  "
-                f"{_ptitle(epoch_idx)}{win_str}",
+                f"{piece_label} (full piece){win_str}",
                 fontsize=11, fontweight="bold"
             )
 
@@ -354,7 +399,7 @@ def _plot_membrane_potential(data, keys, name, epoch_idx, epoch_dir):
 
             for ax_i, (var, full_key) in enumerate(sorted(var_keys.items())):
                 ax  = axes[ax_i, 0]
-                arr = data[full_key][s]   # shape (n_monitored_neurons, n_timesteps)
+                arr = data[full_key]   # shape (n_monitored_neurons, n_timesteps)
                 y_w = arr[k_idx][mask]
                 ax.plot(t_w, y_w, lw=0.8, color=colors[ax_i % len(colors)], label=var)
                 ax.set_ylabel(var)
@@ -363,10 +408,50 @@ def _plot_membrane_potential(data, keys, name, epoch_idx, epoch_dir):
 
             axes[-1, 0].set_xlabel("Time (ms)")
             plt.tight_layout()
-            win_suffix = (f"_window{t_start:.0f}_{t_end:.0f}ms" if t_start >= 0 else "")
-            save(fig,
-                 f"vmon_{pfx}_rep{s:03d}_neuron{nid:04d}{win_suffix}.png",
-                 epoch_dir=epoch_dir)
+            save(fig, fname, epoch_dir=vmon_epoch_dir)
+
+
+def _plot_global_raster():
+    """Plot the whole-clip, input-only, no-learning raster produced by train.py's
+    pre-piece probe pass (SAVE_DIR/global_input_raster.npz). No-op if absent."""
+    fname, epoch_dir = "raster_input_full_clip.png", "global"
+    if _already_saved(fname, epoch_dir):
+        _skip(fname, epoch_dir)
+        return
+
+    npz_path = os.path.join(SCRIPT_DIR, "global_input_raster.npz")
+    if not os.path.exists(npz_path):
+        return
+
+    data      = np.load(npz_path, allow_pickle=True)
+    raster_i  = data["raster_i"]
+    raster_t  = data["raster_t"]
+    n_neurons = int(data["n_neurons"])
+    color_array, handles = _neuron_type_colors("input", n_neurons)
+
+    duration_ms = float(data["duration_ms"]) if "duration_ms" in data.files else (
+        float(raster_t.max()) if len(raster_t) > 0 else 0.0
+    )
+
+    fig, ax = plt.subplots(figsize=(20, 5))
+    for t_mark in np.arange(0, duration_ms, 100):
+        ax.axvline(t_mark, color="gray", lw=0.3, alpha=0.4, zorder=0)
+    if len(raster_t) > 0:
+        c = color_array[raster_i.astype(int)] if color_array is not None else "steelblue"
+        ax.scatter(raster_t, raster_i, s=3, c=c, linewidths=0, rasterized=True, zorder=1)
+    ax.set_title(
+        f"Global Input Raster — full clip, no learning  ({len(raster_t):,} spikes)",
+        fontsize=13, fontweight="bold"
+    )
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Neuron index")
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0, top=n_neurons - 1)
+    ax.grid(True, alpha=0.2)
+    if handles is not None:
+        ax.legend(handles=handles, loc="upper right", fontsize=9, markerscale=2)
+    plt.tight_layout()
+    save(fig, fname, epoch_dir=epoch_dir)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -385,6 +470,10 @@ def _plot_weight_evolution(data, keys, name, epoch_idx, epoch_dir):
     x_label = "Snapshot index"
 
     for k, (pi, pj) in enumerate(pairs):
+        fname = f"weight_evolution_{pfx}_all_pre{pi:04d}_post{pj:04d}.png"
+        if _already_saved(fname, epoch_dir):
+            _skip(fname, epoch_dir)
+            continue
         fig, ax = plt.subplots(figsize=(11, 3))
         ax.plot(x_axis, values[k], lw=1.5, color=f"C{k % 10}")
         ax.set_title(
@@ -397,8 +486,7 @@ def _plot_weight_evolution(data, keys, name, epoch_idx, epoch_dir):
         ax.set_ylim(0, 1)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
-        save(fig, f"weight_evolution_{pfx}_all_pre{pi:04d}_post{pj:04d}.png",
-             epoch_dir=epoch_dir)
+        save(fig, fname, epoch_dir=epoch_dir)
 
     # Per-sample
     if (_has(keys, name, "we_sample_values") and
@@ -415,6 +503,10 @@ def _plot_weight_evolution(data, keys, name, epoch_idx, epoch_dir):
             st_rel = st - st[0]
 
             for k, (pi, pj) in enumerate(pairs):
+                fname = f"weight_evolution_{pfx}_rep{s:03d}_pre{pi:04d}_post{pj:04d}.png"
+                if _already_saved(fname, epoch_dir):
+                    _skip(fname, epoch_dir)
+                    continue
                 fig, ax = plt.subplots(figsize=(11, 3))
                 ax.plot(st_rel, sv[k], lw=1.5, color=f"C{k % 10}")
                 ax.set_title(
@@ -427,9 +519,7 @@ def _plot_weight_evolution(data, keys, name, epoch_idx, epoch_dir):
                 ax.set_ylim(0, 1)
                 ax.grid(True, alpha=0.3)
                 plt.tight_layout()
-                save(fig,
-                     f"weight_evolution_{pfx}_rep{s:03d}_pre{pi:04d}_post{pj:04d}.png",
-                     epoch_dir=epoch_dir)
+                save(fig, fname, epoch_dir=epoch_dir)
 
 
 def _plot_weight_delta(data, keys, name, epoch_idx, epoch_dir):
@@ -444,6 +534,10 @@ def _plot_weight_delta(data, keys, name, epoch_idx, epoch_dir):
     x_axis = np.arange(values.shape[1])
 
     for k, (pi, pj) in enumerate(pairs):
+        fname = f"weight_delta_{pfx}_all_pre{pi:04d}_post{pj:04d}.png"
+        if _already_saved(fname, epoch_dir):
+            _skip(fname, epoch_dir)
+            continue
         w_vals = values[k]
         deltas = np.diff(w_vals, prepend=w_vals[0])
         fig, ax = plt.subplots(figsize=(11, 3))
@@ -458,8 +552,7 @@ def _plot_weight_delta(data, keys, name, epoch_idx, epoch_dir):
         ax.set_ylabel("Δw")
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
-        save(fig, f"weight_delta_{pfx}_all_pre{pi:04d}_post{pj:04d}.png",
-             epoch_dir=epoch_dir)
+        save(fig, fname, epoch_dir=epoch_dir)
 
 
 def _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir):
@@ -491,21 +584,74 @@ def _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir):
             )
 
 
-def _export_fingerprint(data, keys, name, epoch_idx):
-    """Save this piece's converged weight matrix — taken from its LAST epoch
-    (i.e. after all repeats) — into a dedicated, flat `fingerprints/`
-    directory (one file per piece, nothing else) so the sequence can be
-    flipped through as a fingerprint movie without wading through each
-    piece's full per-epoch plot suite. Call only for a piece's final epoch."""
-    if not _has(keys, name, "final_weights"):
+def _export_fingerprint(piece_label, data, keys, epoch_idx):
+    """Save ONE combined fingerprint image per piece — the in->hid weight matrix
+    plus the input and hidden mean-firing-rate vectors, side by side — into a
+    dedicated, flat `fingerprints/` directory (one file per piece, nothing else)
+    so the sequence can be flipped through as a fingerprint movie. Built from
+    the piece's LAST epoch (i.e. after all repeats), for EVERY piece regardless
+    of `visualize_pieces` (the fingerprint movie always covers the whole clip)."""
+    fname, epoch_dir = f"fingerprint_{piece_label}.png", "fingerprints"
+    if _already_saved(fname, epoch_dir):
+        _skip(fname, epoch_dir)
         return
-    W = _get(data, name, "final_weights")
-    _plot_weight_matrix(
-        W,
-        f"Fingerprint — {name}  |  {_current_piece_label}  (after epoch {epoch_idx})",
-        f"fingerprint_{_pfx(name)}_{_current_piece_label}.png",
-        epoch_dir="fingerprints",
+
+    have_w   = _has(keys, "in->hid", "final_weights")
+    have_in  = _has(keys, "input",  "mfr")
+    have_hid = _has(keys, "hidden", "mfr")
+    if not (have_w or have_in or have_hid):
+        return
+
+    def _rate_panel(ax, group_name, title):
+        rates = _get(data, group_name, "mfr")
+        carr, handles = _neuron_type_colors(group_name, len(rates))
+        ax.bar(np.arange(len(rates)), rates, width=1.0,
+               color=carr if carr is not None else _group_color(group_name), linewidth=0)
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.set_xlabel("Neuron index")
+        ax.set_ylabel("Mean rate (Hz)")
+        ax.set_xlim(-0.5, len(rates) - 0.5)
+        ax.set_ylim(bottom=0)
+        ax.grid(True, axis="y", alpha=0.3)
+        if handles is not None:
+            ax.legend(handles=handles, loc="upper right", fontsize=7)
+
+    fig = plt.figure(figsize=(20, 5))
+    gs  = gridspec.GridSpec(1, 3, width_ratios=[2, 1, 1], figure=fig)
+    fig.suptitle(
+        f"Fingerprint — {piece_label}  (after epoch {epoch_idx})",
+        fontsize=14, fontweight="bold"
     )
+
+    ax_w = fig.add_subplot(gs[0])
+    if have_w:
+        W = _get(data, "in->hid", "final_weights")
+        w_min, w_max = W.min(), W.max()
+        if w_max <= w_min:
+            w_max = w_min + 1e-8
+        im = ax_w.imshow(W, aspect="auto", interpolation="nearest", cmap="viridis",
+                          vmin=w_min, vmax=w_max, origin="lower")
+        ax_w.set_title("in->hid weights", fontsize=11, fontweight="bold")
+        ax_w.set_xlabel("Post-synaptic neuron")
+        ax_w.set_ylabel("Pre-synaptic neuron")
+        plt.colorbar(im, ax=ax_w, label="Weight")
+    else:
+        ax_w.axis("off")
+
+    ax_in = fig.add_subplot(gs[1])
+    if have_in:
+        _rate_panel(ax_in, "input", "Input rate")
+    else:
+        ax_in.axis("off")
+
+    ax_hid = fig.add_subplot(gs[2])
+    if have_hid:
+        _rate_panel(ax_hid, "hidden", "Hidden rate")
+    else:
+        ax_hid.axis("off")
+
+    plt.tight_layout()
+    save(fig, fname, epoch_dir=epoch_dir)
 
 
 def _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir):
@@ -525,6 +671,10 @@ def _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir):
         for nid in neuron_ids:
             nid = int(nid)
             if nid >= W.shape[1]:
+                continue
+            fname = f"weights_per_neuron_{_pfx(name)}_rep{s:03d}_neuron{nid:04d}.png"
+            if _already_saved(fname, epoch_dir):
+                _skip(fname, epoch_dir)
                 continue
             weights = W[:, nid]   # incoming weights for this post-synaptic neuron
 
@@ -556,9 +706,7 @@ def _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir):
             ax_hist.grid(True, alpha=0.3)
 
             plt.tight_layout()
-            save(fig,
-                 f"weights_per_neuron_{_pfx(name)}_rep{s:03d}_neuron{nid:04d}.png",
-                 epoch_dir=epoch_dir)
+            save(fig, fname, epoch_dir=epoch_dir)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -604,13 +752,17 @@ def _neuron_type_colors(name, n_neurons):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Global (not piece-specific) plots
+# ══════════════════════════════════════════════════════════════════════════════
+
+_plot_global_raster()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Main loop — pieces, then each piece's own epochs (repeats)
 # ══════════════════════════════════════════════════════════════════════════════
 
 for piece_num, piece_path in enumerate(piece_dirs):
-    if piece_num not in _pieces_to_visualize(len(piece_dirs)):
-        continue
-
     _current_piece_label = os.path.basename(piece_path)   # e.g. "piece_0000"
 
     piece_epoch_files = sorted(glob_mod.glob(os.path.join(piece_path, "history_epoch_*.npz")))
@@ -618,15 +770,26 @@ for piece_num, piece_path in enumerate(piece_dirs):
         print(f"\nWARNING: no history_epoch_*.npz found in {piece_path}, skipping")
         continue
 
+    # The fingerprint movie always covers every piece; the detailed per-epoch
+    # plot suite below still honors visualize_pieces.
+    do_full_viz = piece_num in _pieces_to_visualize(len(piece_dirs))
+
     for epoch_idx, npz_path in enumerate(piece_epoch_files):
-        if epoch_idx not in _epochs_to_visualize(len(piece_epoch_files)):
+        is_final_epoch = (epoch_idx == len(piece_epoch_files) - 1)
+
+        if is_final_epoch:
+            fp_data = np.load(npz_path, allow_pickle=True)
+            fp_keys = set(fp_data.files)
+            _export_fingerprint(_current_piece_label, fp_data, fp_keys, epoch_idx)
+
+        if not do_full_viz or epoch_idx not in _epochs_to_visualize(len(piece_epoch_files)):
             continue
 
         epoch_dir = os.path.join(_current_piece_label, f"epoch_{epoch_idx}")
         print(f"\nProcessing {_ptitle(epoch_idx)} — {os.path.basename(npz_path)}")
 
-        data = np.load(npz_path, allow_pickle=True)
-        keys = set(data.files)
+        data = fp_data if is_final_epoch else np.load(npz_path, allow_pickle=True)
+        keys = fp_keys if is_final_epoch else set(data.files)
 
         # ── Groups ────────────────────────────────────────────────────────────
         for name in group_cfg:
@@ -634,7 +797,6 @@ for piece_num, piece_path in enumerate(piece_dirs):
             _plot_spike_raster(data, keys, name, epoch_idx, epoch_dir, color)
             _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color)
             _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color)
-            _plot_membrane_potential(data, keys, name, epoch_idx, epoch_dir)
 
         # ── Synapses ──────────────────────────────────────────────────────────
         for name in synapse_cfg:
@@ -642,10 +804,6 @@ for piece_num, piece_path in enumerate(piece_dirs):
             _plot_weight_delta(data, keys, name, epoch_idx, epoch_dir)
             _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir)
             _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir)
-            # Fingerprint movie only wants this piece's FINAL (fully converged)
-            # weight matrix, i.e. its last epoch — not every repeat.
-            if epoch_idx == len(piece_epoch_files) - 1:
-                _export_fingerprint(data, keys, name, epoch_idx)
 
         # ── Initial weight matrices (piece's first epoch only) ──────────────────
         if epoch_idx == 0:
@@ -659,11 +817,15 @@ for piece_num, piece_path in enumerate(piece_dirs):
                         epoch_dir=os.path.join(_current_piece_label, "epoch_init")
                     )
 
+    # ── Membrane potential: one continuous whole-piece trace, not per-epoch ────
+    if do_full_viz:
+        _plot_piece_membrane_potential(piece_path, _current_piece_label)
+
 
 # ── finish ────────────────────────────────────────────────────────────────────
 
-print(f"\n{len(saved)} PNG(s) saved to: {OUT_DIR}")
-if not saved:
+print(f"\n{len(saved)} PNG(s) saved, {len(skipped)} already existed (skipped) — output: {OUT_DIR}")
+if not saved and not skipped:
     print("No recognised keys found in npz files — nothing was plotted.")
     print("Check that group/synapse names in record_config.yaml match those "
           "passed to recorder.track_group() / recorder.track_synapses().")

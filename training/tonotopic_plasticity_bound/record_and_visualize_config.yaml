@@ -26,8 +26,10 @@ record:
     hidden:
       spike_raster:       true
       mean_firing_rate:   true
+      # Membrane potential visualization disabled — no neuron ids to trace,
+      # so no StateMonitor is attached and no membrane_potential.npz is written.
       membrane_potential: []
-      membrane_potential_variables: [v, vth, trace_r]
+      membrane_potential_variables: []
 
   synapses:
 
@@ -45,7 +47,7 @@ record:
 visualize:
 
   visualize_samples: [0]
-  visualize_pieces:  []   # empty = all pieces
+  visualize_pieces:  [12,20]  # only piece_0020
   visualize_epoch:   []   # empty = all epochs (repeats) within each piece
 
   track_weight_delta: false
@@ -68,7 +70,7 @@ visualize:
       spike_raster:       true
       mean_firing_rate:   true
       membrane_potential: []
-      membrane_potential_variables: [v, vth, trace_r]
+      membrane_potential_variables: []
 
   synapses:
 
@@ -80,24 +82,4 @@ visualize:
       weights_evolution:        []
       final_weights_per_sample: true
 
-  weights_per_neuron:
-    in->hid:
-      - 108
-      - 109
-      - 110
-      - 111
-      - 112
-      - 113
-      - 114
-      - 115
-      - 116
-    hid->hid:
-      - 108
-      - 109
-      - 110
-      - 111
-      - 112
-      - 113
-      - 114
-      - 115
-      - 116
+  weights_per_neuron: {}
