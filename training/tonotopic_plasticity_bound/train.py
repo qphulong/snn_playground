@@ -13,24 +13,26 @@ import time
 start = time.time()
 
 # ============================================================
-# Dataset
+# Dataset — one clip, sliced into overlapping pieces (see "Piece framing"
+# below); each piece trains independently from the SAME shared init weights.
 # ============================================================
 
-wav_files = [
-    "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00002.m4a"
-]
+AUDIO_PATH = "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00002.m4a"
+print(f"Audio: {AUDIO_PATH}")
 
-print(f"Found {len(wav_files)} wav files")
+# -- Piece framing --
+WINDOW_MS = 200   # piece length
+HOP_MS    = 100   # slide between consecutive pieces (50% overlap)
+N_REPEATS = 8    # repeated exposures per piece == "samples" within its epoch
 
-EPOCHS   = 8
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================================
 # Hyperparameters
 # ============================================================
 
-N_IN = 192   # 64 channels × 3 neurons/channel
-N_H  = 192
+N_IN = 128   # 64 channels × 2 neurons/channel (sustained + onset, no phase)
+N_H  = 128
 
 DT_SIM = 1 * ms
 
@@ -85,7 +87,7 @@ APOST_INH    = -0.0048
 
 # -- Channel layout --
 N_CHANNELS    = 64
-N_PER_CHANNEL = N_IN // N_CHANNELS   # 4
+N_PER_CHANNEL = N_IN // N_CHANNELS   # 2
 
 # -- Tonotopic plasticity (polynomial decay: max(0, 1-(d_channel/R)^p)) --
 R_EXC_CHANNEL = 11
@@ -149,24 +151,24 @@ Apost_inh_matrix = APOST_INH    * _jaccard
 del _ch_h, _dist_ch_hh, _overlap_ch, _jaccard
 
 # ============================================================
-# Initialise weight matrices
+# Initialise weight matrices (shared init — every piece restores to this)
 # ============================================================
 
 # Excitatory: formula-shaped, column-normalised to NORM_LIMIT_EXC
-w_ih = np.zeros((N_IN, N_H))
-w_ih[_src_ih, _tgt_ih] = wmax_matrix[_src_ih, _tgt_ih]
+w_ih_init = np.zeros((N_IN, N_H))
+w_ih_init[_src_ih, _tgt_ih] = wmax_matrix[_src_ih, _tgt_ih]
 for _j in range(N_H):
     _col_mask = (_tgt_ih == _j)
     _rows = _src_ih[_col_mask]
-    _wsum = w_ih[_rows, _j].sum()
+    _wsum = w_ih_init[_rows, _j].sum()
     if _wsum > 0:
-        w_ih[_rows, _j] *= NORM_LIMIT_EXC / _wsum
+        w_ih_init[_rows, _j] *= NORM_LIMIT_EXC / _wsum
 
 # Inhibitory: uniform random init in [0.01, 0.02] on connected positions
-w_hh = np.zeros((N_H, N_H))
-w_hh[_src_hh, _tgt_hh] = np.random.uniform(0.01, 0.02, size=_src_hh.shape[0])
+w_hh_init = np.zeros((N_H, N_H))
+w_hh_init[_src_hh, _tgt_hh] = np.random.uniform(0.01, 0.02, size=_src_hh.shape[0])
 
-init_weights = {"in->hid": w_ih.copy(), "hid->hid": w_hh.copy()}
+init_weights = {"in->hid": w_ih_init.copy(), "hid->hid": w_hh_init.copy()}
 
 # ============================================================
 # Build Brian2 network  (once — never rebuilt between samples)
@@ -294,7 +296,7 @@ S_hh.connect(i=_src_hh, j=_tgt_hh)
 S_hh.wmax_inh_syn  = wmax_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apre_inh_syn  = Apre_inh_matrix[_src_hh, _tgt_hh]
 S_hh.Apost_inh_syn = Apost_inh_matrix[_src_hh, _tgt_hh]
-S_hh.w_inh         = w_hh[_src_hh, _tgt_hh]   # uniform [0.01, 0.02]
+S_hh.w_inh         = w_hh_init[_src_hh, _tgt_hh]   # uniform [0.01, 0.02]
 
 net = Network(G_in, G_h, S_ih, S_hh)
 
@@ -360,72 +362,97 @@ net.store('init')
 
 
 # ============================================================
-# Training loop
+# Encode the whole clip once, then slice into WINDOW_MS/HOP_MS pieces.
 # ============================================================
 
-for epoch_idx in range(EPOCHS):
+try:
+    I_sim, T_sim = compute_spike_input_current(
+        AUDIO_PATH,
+        scale=1.0,
+        num_filters=64,
+        sustained_per_band=1,
+        onset_per_band=1,
+        phase_per_band=0,
+        sust_gain=0.3,
+        onset_gain=2.25,
+        sust_spread_min=1,
+        sust_spread_max=1,
+    )
+except Exception as e:
+    raise RuntimeError(f"Error encoding audio {AUDIO_PATH}: {e}") from e
+
+print(f"Clip length: {T_sim} ms")
+
+N_PIECES = (T_sim - WINDOW_MS) // HOP_MS + 1
+if N_PIECES < 1:
+    raise ValueError(f"Clip ({T_sim} ms) shorter than one window ({WINDOW_MS} ms)")
+print(f"{N_PIECES} pieces of {WINDOW_MS}ms (hop {HOP_MS}ms), {N_REPEATS} repeats each")
+
+
+# ============================================================
+# Training loop — pieces, then each piece's own epochs.
+#
+# Every piece restores to the SAME shared init weights (never carried over
+# from the previous piece). Within a piece, each repeated exposure is its
+# own recorder epoch — its own history_epoch_NNN.npz, with NNN numbered
+# from 0 independently for every piece (piece_0000/epoch_000..031,
+# piece_0001/epoch_000..031, ...). The underlying Brian2 clock is NOT reset
+# between repeats within a piece (no net.restore there), so neuron/synapse
+# state carries over continuously — only the recorder's per-epoch
+# bookkeeping resets, so each repeat's plots read as [0, WINDOW_MS) local time.
+# ============================================================
+
+for piece_idx in range(N_PIECES):
+    t_start = piece_idx * HOP_MS
+    t_end   = t_start + WINDOW_MS
+
     print(f"\n{'='*60}")
-    print(f"Epoch {epoch_idx}/{EPOCHS - 1}")
+    print(f"Piece {piece_idx}/{N_PIECES - 1}  t=[{t_start},{t_end})ms")
     print(f"{'='*60}")
 
-    recorder.reset_epoch()
+    piece_save_dir = os.path.join(SAVE_DIR, f"piece_{piece_idx:04d}")
 
-    for sample_idx, audio_path in enumerate(wav_files):
-        print(f"  [epoch {epoch_idx}, sample {sample_idx}/{len(wav_files)-1}] "
-              f"{os.path.relpath(audio_path)}")
+    I_piece = I_sim[:, t_start:t_end]                 # (N_IN, WINDOW_MS)
+    I_tiled = np.tile(I_piece, (1, N_REPEATS))         # (N_IN, WINDOW_MS * N_REPEATS)
 
-        # ── Encode audio ───────────────────────────────────────────────────────
-        try:
-            I, T = compute_spike_input_current(
-                audio_path,
-                scale=1.0,
-                num_filters=96,
-                sustained_per_band=1,
-                onset_per_band=1,
-                phase_per_band=1,
-                sust_gain=0.3,
-                onset_gain=2.25,
-                phase_gain=0.45,
-                sust_spread_min=1,
-                sust_spread_max=1,
-            )
-        except Exception as e:
-            print(f"    Error encoding audio: {e}")
-            continue
+    # ── Reset to the shared clean init for this piece ─────────────────────────
+    # restore resets: clock→0, v, a, vth, trace_r, apre, apost,
+    #                 and all monitor buffers.
+    net.restore('init')
 
-        duration_s = float(T) * float(DT_SIM)
+    G_in.namespace["I_timed"] = TimedArray(I_tiled.T.astype(float), dt=DT_SIM)
 
-        # ── Reset to clean state, then inject this sample's data ──────────────
-        # restore resets: clock→0, v, a, vth, trace_r, apre, apost,
-        #                 and all monitor buffers.
-        net.restore('init')
+    w_ih = w_ih_init.copy()
+    w_hh = w_hh_init.copy()
+    S_ih.w    = w_ih[src_ih, tgt_ih]
+    S_ih.apre  = 0
+    S_ih.apost = 0
+    S_ih.r1 = 0; S_ih.r2 = 0; S_ih.o1 = 0; S_ih.o2 = 0   # triplet detectors
 
-        G_in.namespace["I_timed"] = TimedArray(I.T.astype(float), dt=DT_SIM)
+    S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
+    S_hh.apre_inh  = 0
+    S_hh.apost_inh = 0
 
-        # Weights survive across samples — override the restored initial weights.
-        S_ih.w    = w_ih[src_ih, tgt_ih]
-        S_ih.apre  = 0
-        S_ih.apost = 0
-        S_ih.r1 = 0; S_ih.r2 = 0; S_ih.o1 = 0; S_ih.o2 = 0   # triplet detectors
+    for rep in range(N_REPEATS):
+        print(f"  [piece {piece_idx}, epoch {rep}/{N_REPEATS - 1}]")
 
-        # Restore learned inhibitory weights (uniform [0.01, 0.02] at epoch 0).
-        S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
-        S_hh.apre_inh  = 0
-        S_hh.apost_inh = 0
-
-        # Recorder tracks elapsed time in Python; since restore resets the
-        # Brian2 clock to 0, spike times in the monitor are always [0, T] ms.
-        # Reset _elapsed_ms so start_ms = 0 and the slice arithmetic is correct.
-        recorder._elapsed_ms = 0.0
+        # Each repeat is its own recorder epoch -> its own npz file. The
+        # Brian2 clock keeps advancing through I_tiled (no restore here), so
+        # we anchor _elapsed_ms to the clock's actual position instead of
+        # letting reset_epoch() zero it, keeping this epoch's recorded
+        # times relative to ITS OWN start rather than the piece's start.
+        recorder.reset_epoch()
+        recorder._elapsed_ms = float(rep * WINDOW_MS)
 
         # ── Record: before ─────────────────────────────────────────────────────
-        recorder.before_sample(sample_idx)
+        recorder.before_sample(0)
 
-        # ── Simulate ───────────────────────────────────────────────────────────
-        net.run(T * DT_SIM)
+        # ── Simulate this repeat. No restore between repeats — state carries
+        #    over, giving continuous repeated exposure rather than N resets.
+        net.run(WINDOW_MS * DT_SIM)
 
         # ── Extract updated weights ────────────────────────────────────────────
-        # Both excitatory and inhibitory are L1-normalised every 50 ms.
+        # Both excitatory and inhibitory are L1-normalised every 100 ms.
         w_ih_new = np.zeros((N_IN, N_H))
         w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
         w_ih = w_ih_new
@@ -435,26 +462,25 @@ for epoch_idx in range(EPOCHS):
         w_hh = w_hh_new
 
         # ── Record: after ──────────────────────────────────────────────────────
-        # Pass all post-simulation weight matrices you want recorded per-sample.
         recorder.after_sample(
-            sample_idx,
-            duration_s,
+            0,
+            WINDOW_MS / 1000.0,
             w_matrices={
                 "in->hid":  w_ih,
                 "hid->hid": w_hh,
             }
         )
 
-    # ── End of epoch ──────────────────────────────────────────────────────────
-    recorder.save_epoch(
-        epoch_idx,
-        save_dir=SAVE_DIR,
-        final_weights={
-            "in->hid":  w_ih,
-            "hid->hid": w_hh,
-        },
-        init_weights=init_weights if epoch_idx == 0 else None,
-    )
+        # ── Save this repeat as its own epoch, in this piece's own folder ──────
+        recorder.save_epoch(
+            rep,
+            save_dir=piece_save_dir,
+            final_weights={
+                "in->hid":  w_ih,
+                "hid->hid": w_hh,
+            },
+            init_weights=init_weights if rep == 0 else None,
+        )
 
 
 # ============================================================
