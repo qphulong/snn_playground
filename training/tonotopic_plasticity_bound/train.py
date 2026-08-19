@@ -44,17 +44,28 @@ DT_SIM = 1 * ms
 
 # -- Input layer (adaptive LIF) --
 tau_m       = 40 * ms
-tau_a       = 100 * ms
+tau_a       = 40 * ms    # was 200ms (which was itself bumped from 100ms) — 200ms barely
+                          # decayed between ANY spikes, even 20Hz-spaced ones, collapsing
+                          # them too. 40ms sits between the 20Hz (~50ms ISI, mostly decays)
+                          # and 50Hz (~20ms ISI, compounds) regimes for rate-selective adaptation.
+beta        = 3.5        # was 1.75 — tau_a=40ms fixed selectivity (20Hz no longer
+                          # collapses) but the absolute drag at beta=1.75 was too small to
+                          # slow 50Hz down; doubling preserves the tau-driven ratio while
+                          # raising the absolute suppression on the high-rate regime
 tau_current = 1 * ms
-beta        = 1
 v_th_in     = 1.0
 
 # -- Hidden layer (adaptive-threshold LIF) --
 tau_h    = 50 * ms
-tau_vth  = 100 * ms
+tau_vth  = 60 * ms    # was 180ms (itself bumped from 100ms) — same over-persistence issue
+                       # as tau_a; shortened so it stays rate-selective rather than a flat
+                       # per-piece spike-count penalty. Given a bit more slack than tau_a
+                       # since hidden output is naturally sparser than input drive.
 vth_rest = 0.8
 vth_init = 0.8
-vth_jump = 0.3
+vth_jump = 1.0        # was 0.5 — same reasoning as beta above: tau_vth=60ms fixed
+                       # selectivity, doubling the amplitude raises absolute suppression
+                       # on the high-rate regime without changing the selectivity ratio
 
 # -- Soft refractory (hidden only; replaces hard refractory) --
 tau_r = 10 * ms
@@ -82,8 +93,10 @@ wmin = 0.0
 
 # -- Excitatory synapse --
 WMAX_CENTER  = 1.0
-APRE_CENTER  =  0.004
-APOST_CENTER = -0.0048
+APRE_CENTER  =  0.008    # was 0.006 (before that 0.004) — raised further now that both
+APOST_CENTER = -0.0096   # rate regimes have comparably-bounded, non-collapsing spike
+                          # budgets (tau_a/tau_vth fix above), so a bump applies evenly
+                          # instead of favoring one regime (ratio kept ~1.2)
 
 # -- Inhibitory lateral synapse --
 W_INH_CENTER = 1.0
@@ -101,7 +114,7 @@ p_EXC         = 3
 
 # -- Homeostatic normalisation --
 NORM_LIMIT_EXC = 1.0455
-NORM_LIMIT_INH = 0.4656
+NORM_LIMIT_INH = 0.40
 
 
 # ============================================================
