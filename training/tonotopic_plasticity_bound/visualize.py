@@ -411,6 +411,13 @@ def _plot_piece_membrane_potential(piece_path, piece_label):
             save(fig, fname, epoch_dir=vmon_epoch_dir)
 
 
+
+# Must mirror train.py's WINDOW_MS/HOP_MS — piece_idx's window is
+# [piece_idx*HOP_MS, piece_idx*HOP_MS + WINDOW_MS).
+_PIECE_WINDOW_MS = 200
+_PIECE_HOP_MS    = 100
+
+
 def _plot_global_raster():
     """Plot the whole-clip, input-only, no-learning raster produced by train.py's
     pre-piece probe pass (SAVE_DIR/global_input_raster.npz). No-op if absent."""
@@ -450,6 +457,22 @@ def _plot_global_raster():
     ax.grid(True, alpha=0.2)
     if handles is not None:
         ax.legend(handles=handles, loc="upper right", fontsize=9, markerscale=2)
+
+    # ── Piece-index secondary axis: piece_idx's window is
+    #    [piece_idx*HOP_MS, piece_idx*HOP_MS + WINDOW_MS), so t = piece_idx*HOP_MS
+    #    gives the piece's start; every existing 100ms gridline already lines up
+    #    with a piece start when HOP_MS == 100.
+    ax_top = ax.secondary_xaxis(
+        "top",
+        functions=(lambda t: t / _PIECE_HOP_MS, lambda p: p * _PIECE_HOP_MS),
+    )
+    ax_top.set_xlabel(
+        f"Piece index (start; window={_PIECE_WINDOW_MS}ms, hop={_PIECE_HOP_MS}ms)",
+        fontsize=9,
+    )
+    ax_top.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(2))
+    ax_top.tick_params(labelsize=7, labelrotation=0)
+
     plt.tight_layout()
     save(fig, fname, epoch_dir=epoch_dir)
 

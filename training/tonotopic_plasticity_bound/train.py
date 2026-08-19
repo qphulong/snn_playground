@@ -17,7 +17,10 @@ start = time.time()
 # below); each piece trains independently from the SAME shared init weights.
 # ============================================================
 
-AUDIO_PATH = "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00002.m4a"
+# AUDIO_PATH = "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00002.m4a"
+# AUDIO_PATH = "datasets/vox1/dev_05/id10805/I2D_O4DHh2Q/00002.m4a"
+# AUDIO_PATH = "datasets/vox1/dev_06/id11185/qvtO6iHq_Ko/00006.m4a"
+AUDIO_PATH = "datasets/vox1/dev_03/id10402/lWGGqR2uxFY/00004.m4a"
 print(f"Audio: {AUDIO_PATH}")
 
 # -- Piece framing --
@@ -56,13 +59,18 @@ tau_current = 1 * ms
 v_th_in     = 1.0
 
 # -- Hidden layer (adaptive-threshold LIF) --
-tau_h    = 50 * ms
+tau_h    = 150 * ms   # was 50ms — too short to let sparse input spikes (weak pieces:
+                       # 5-15Hz on a few channels, ISI 66-200ms) summate; membrane decayed
+                       # 73-98% between spikes so hidden never crossed threshold on weak
+                       # drive. Lengthened to match the sparse-ISI regime; adaptive vth/
+                       # normalization/lateral-inhibition should keep strong pieces in check.
 tau_vth  = 60 * ms    # was 180ms (itself bumped from 100ms) — same over-persistence issue
                        # as tau_a; shortened so it stays rate-selective rather than a flat
                        # per-piece spike-count penalty. Given a bit more slack than tau_a
                        # since hidden output is naturally sparser than input drive.
-vth_rest = 0.8
-vth_init = 0.8
+vth_rest = 0.6         # was 0.8 — lowers the crossing bar so weak pieces (sparse pre-spikes,
+                       # now better integrated via tau_h above) can still reach threshold.
+vth_init = 0.6
 vth_jump = 1.0        # was 0.5 — same reasoning as beta above: tau_vth=60ms fixed
                        # selectivity, doubling the amplitude raises absolute suppression
                        # on the high-rate regime without changing the selectivity ratio
@@ -346,13 +354,17 @@ recorder.track_synapses("hid->hid", S_hh, _src_hh, _tgt_hh)
 
 recorder.build()   # attaches all Brian2 monitors — call once, after all registrations
 
-# ── Periodic L1 normalisation every 50 ms — excitatory and inhibitory ────────
+# ── Periodic L1 normalisation every 25 ms — excitatory and inhibitory ────────
+# Was 100ms — busy pieces (dense input bursts) could rack up enough LTP between
+# ticks to blow past NORM_LIMIT_EXC/INH by up to ~2x before the next correction
+# (confirmed via post-hoc column-sum checks on real samples). Tightening the
+# period bounds how much overshoot can accumulate between corrections.
 tgt_masks_ih     = [np.where(tgt_ih == j)[0] for j in range(N_H)]
 tgt_masks_hh     = [np.where(_tgt_hh == j)[0] for j in range(N_H)]
 wmax_syn_arr     = np.array(S_ih.wmax_syn)
 wmax_inh_syn_arr = np.array(S_hh.wmax_inh_syn)
 
-@network_operation(dt=100*ms, when='end')
+@network_operation(dt=25*ms, when='end')
 def normalize_weights():
     # exc_sums = np.array([np.array(S_ih.w[tgt_masks_ih[j]]).sum() for j in range(N_H)])
     # inh_sums = np.array([np.array(S_hh.w_inh[tgt_masks_hh[j]]).sum() for j in range(N_H)])
