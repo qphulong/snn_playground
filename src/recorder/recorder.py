@@ -193,7 +193,8 @@ class Recorder:
                 e["mfr_dur_s"]         = 0.0
                 e["mfr_sample_counts"] = []
                 e["mfr_sample_dur_s"]  = []
-            if entry["mon"].get("voltage") is not None:
+            if (entry["mon"].get("voltage") is not None
+                    and cfg.get("membrane_potential_scope", "epoch") == "epoch"):
                 e["vmon_t_all"]  = []
                 e["vmon_v_all"]  = {var: [] for var in entry["mon"].get("vmon_variables", [])}
             self._epoch["groups"][name] = e
@@ -274,7 +275,7 @@ class Recorder:
                     e["mfr_sample_counts"].append(counts.astype(np.int32))
                     e["mfr_sample_dur_s"].append(duration_s)
 
-            if "voltage" in mon:
+            if "voltage" in mon and cfg.get("membrane_potential_scope", "epoch") == "epoch":
                 vmon = mon["voltage"]
                 for var in mon["vmon_variables"]:
                     e["vmon_v_all"][var].append(
@@ -354,7 +355,9 @@ class Recorder:
                 arrays[f"{pfx}__mfr_sample_counts"] = _pack_ragged(e["mfr_sample_counts"])
                 arrays[f"{pfx}__mfr_sample_dur_s"]  = np.array(e["mfr_sample_dur_s"], dtype=np.float32)
 
-            if mon.get("voltage") is not None and e.get("vmon_t_all"):
+            if (mon.get("voltage") is not None
+                    and cfg.get("membrane_potential_scope", "epoch") == "epoch"
+                    and e.get("vmon_t_all")):
                 arrays[f"{pfx}__vmon_indices"] = np.array(mon["vmon_indices"], dtype=np.int32)
                 arrays[f"{pfx}__vmon_t_all"]   = _pack_ragged(e["vmon_t_all"])
                 for var in mon["vmon_variables"]:
@@ -390,3 +393,43 @@ class Recorder:
         path = os.path.join(save_dir, f"history_epoch_{epoch_idx:03d}.npz")
         np.savez_compressed(path, **arrays)
         print(f"  [recorder] saved epoch {epoch_idx} → {path}")
+
+    def save_piece_membrane(self, save_dir):
+        """
+        Save ONE continuous membrane-potential trace per group configured with
+        `membrane_potential_scope: piece` (default is "epoch" — the original
+        per-repeat behaviour, untouched for every group that doesn't set this).
+
+        The underlying StateMonitor already accumulates continuously across a
+        piece's repeats (nothing restores it between them), so this just reads
+        its buffer once — call it after the last repeat of a piece, before the
+        next piece's net.restore('init') resets it.
+        """
+        arrays = {}
+        for name, entry in self._groups.items():
+            cfg = entry["cfg"]
+            mon = entry["mon"]
+            if (mon.get("voltage") is None
+                    or cfg.get("membrane_potential_scope", "epoch") != "piece"):
+                continue
+
+            vmon = mon["voltage"]
+            pfx  = name.replace("->", "_to_")
+
+            win_rows = []
+            for nid, w in mon["vmon_windows"]:
+                win_rows.append([nid, float(w[0]), float(w[1])] if w else [nid, -1., -1.])
+
+            arrays[f"{pfx}__vmon_indices"] = np.array(mon["vmon_indices"], dtype=np.int32)
+            arrays[f"{pfx}__vmon_windows"] = np.array(win_rows, dtype=np.float32)
+            arrays[f"{pfx}__vmon_t"]       = np.array(vmon.t / ms, dtype=np.float32)
+            for var in mon["vmon_variables"]:
+                arrays[f"{pfx}__vmon_{var}"] = np.array(getattr(vmon, var), dtype=np.float32)
+
+        if not arrays:
+            return
+
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, "membrane_potential.npz")
+        np.savez_compressed(path, **arrays)
+        print(f"  [recorder] saved piece membrane potential → {path}")
