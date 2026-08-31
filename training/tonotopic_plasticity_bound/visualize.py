@@ -1,9 +1,9 @@
 """
 visualize.py
 ------------
-Load per-piece history files. Each piece_XXXX/ directory owns its own
-history_epoch_YYY.npz files (one per repeat/epoch, its own 0..N-1 numbering)
-and save all enabled plots as PNGs.
+Load this run's flat history_epoch_YYY.npz files (one per full-clip epoch,
+0..N-1) directly from the script directory and save all enabled plots as
+PNGs.
 
 Works with the registry recorder key schema:
   group keys   : {group_name}__{field}        e.g. hidden__raster_i
@@ -11,13 +11,13 @@ Works with the registry recorder key schema:
   (-> in names is stored as _to_)
 
 Output structure:
-  vizs/piece_0000/epoch_init/  — piece 0000's initial weight matrices
-  vizs/piece_0000/epoch_0/     — piece 0000's plots for epoch 0
-  vizs/piece_0000/epoch_1/     — piece 0000's plots for epoch 1
+  vizs/epoch_init/            — initial weight matrices (epoch 0's init)
+  vizs/epoch_0/                — plots for epoch 0
+  vizs/epoch_1/                — plots for epoch 1
   ...
-  vizs/piece_0001/epoch_0/     — piece 0001's plots for epoch 0
-  ...
-  vizs/fingerprints/           — one converged weight-matrix image per piece
+  vizs/membrane_potential/     — the run's one continuous membrane-potential trace
+  vizs/global/                 — whole-clip, no-learning input raster
+  vizs/fingerprint_final.png   — converged in->hid weights + firing rates
 
 Usage:
     python visualize.py
@@ -43,7 +43,6 @@ cfg_path   = os.path.join(SCRIPT_DIR, "record_and_visualize_config.yaml")
 
 visualize_samples    = None
 visualize_epoch      = []
-visualize_pieces     = []
 weights_per_neuron   = {}   # {synapse_name: [neuron_ids]}
 track_weight_delta   = False
 group_cfg            = {}
@@ -56,23 +55,19 @@ if os.path.exists(cfg_path):
     viz_cfg = cfg.get("visualize", cfg)
     visualize_samples  = viz_cfg.get("visualize_samples",  None)
     visualize_epoch    = viz_cfg.get("visualize_epoch",    [])
-    visualize_pieces   = viz_cfg.get("visualize_pieces",   [])
     weights_per_neuron = viz_cfg.get("weights_per_neuron", {}) or {}
     track_weight_delta = viz_cfg.get("track_weight_delta", False)
     group_cfg          = viz_cfg.get("groups",   {}) or {}
     synapse_cfg        = viz_cfg.get("synapses", {}) or {}
 
-# ── find piece directories — each piece owns its own epoch_000..NNN.npz files ──
+# ── find this run's flat epoch files ────────────────────────────────────────
 
-piece_dirs = sorted(
-    d for d in glob_mod.glob(os.path.join(SCRIPT_DIR, "piece_*"))
-    if os.path.isdir(d)
-)
-if not piece_dirs:
-    print(f"ERROR: No piece_* directories found in {SCRIPT_DIR}")
+epoch_files = sorted(glob_mod.glob(os.path.join(SCRIPT_DIR, "history_epoch_*.npz")))
+if not epoch_files:
+    print(f"ERROR: No history_epoch_*.npz files found in {SCRIPT_DIR}")
     sys.exit(1)
 
-print(f"Found {len(piece_dirs)} piece director{'y' if len(piece_dirs) == 1 else 'ies'}")
+print(f"Found {len(epoch_files)} epoch file{'s' if len(epoch_files) != 1 else ''}")
 
 # ── output directory ──────────────────────────────────────────────────────────
 
@@ -126,18 +121,9 @@ def _epochs_to_visualize(total):
     return list(range(total))
 
 
-def _pieces_to_visualize(total):
-    if visualize_pieces:
-        return [p for p in visualize_pieces if p < total]
-    return list(range(total))
-
-
-_current_piece_label = ""   # set once per piece directory in the main loop
-
-
 def _ptitle(epoch_idx):
-    """Combined 'piece_label, Epoch N' label used in every plot title."""
-    return f"{_current_piece_label}, Epoch {epoch_idx}"
+    """'Epoch N' label used in every plot title."""
+    return f"Epoch {epoch_idx}"
 
 
 def _window_mask(t, t_start, t_end):
@@ -336,13 +322,14 @@ def _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color):
             )
 
 
-def _plot_piece_membrane_potential(piece_path, piece_label):
-    """Plot each piece's ONE continuous membrane-potential trace (spans all of
-    that piece's repeats), read from piece_path/membrane_potential.npz — written
-    once per piece by recorder.save_piece_membrane() for groups configured with
+def _plot_membrane_potential():
+    """Plot the run's ONE continuous membrane-potential trace (spans every
+    epoch — nothing restores it between them), read from
+    SCRIPT_DIR/membrane_potential.npz, written once by
+    recorder.save_piece_membrane() for groups configured with
     `membrane_potential_scope: piece`. No-op if that file isn't present (e.g. for
     groups still using the default per-epoch scope, or older recordings)."""
-    npz_path = os.path.join(piece_path, "membrane_potential.npz")
+    npz_path = os.path.join(SCRIPT_DIR, "membrane_potential.npz")
     if not os.path.exists(npz_path):
         return
 
@@ -370,13 +357,13 @@ def _plot_piece_membrane_potential(piece_path, piece_label):
         if not var_keys:
             continue
 
-        vmon_epoch_dir = os.path.join(piece_label, "membrane_potential")
+        vmon_epoch_dir = "membrane_potential"
 
         for k_idx, nid in enumerate(neurons):
             t_start = float(windows[k_idx, 1]) if windows[k_idx, 1] >= 0 else -1.0
             t_end   = float(windows[k_idx, 2]) if windows[k_idx, 2] >= 0 else -1.0
             win_suffix = (f"_window{t_start:.0f}_{t_end:.0f}ms" if t_start >= 0 else "")
-            fname = f"vmon_{pfx}_fullpiece_neuron{nid:04d}{win_suffix}.png"
+            fname = f"vmon_{pfx}_fullrun_neuron{nid:04d}{win_suffix}.png"
             if _already_saved(fname, vmon_epoch_dir):
                 _skip(fname, vmon_epoch_dir)
                 continue
@@ -390,7 +377,7 @@ def _plot_piece_membrane_potential(piece_path, piece_label):
             win_str = f"  [{t_start:.0f}–{t_end:.0f} ms]" if t_start >= 0 else ""
             fig.suptitle(
                 f"State Variables — {name}, Neuron {nid}  |  "
-                f"{piece_label} (full piece){win_str}",
+                f"full run{win_str}",
                 fontsize=11, fontweight="bold"
             )
 
@@ -412,15 +399,9 @@ def _plot_piece_membrane_potential(piece_path, piece_label):
 
 
 
-# Must mirror train.py's WINDOW_MS/HOP_MS — piece_idx's window is
-# [piece_idx*HOP_MS, piece_idx*HOP_MS + WINDOW_MS).
-_PIECE_WINDOW_MS = 200
-_PIECE_HOP_MS    = 100
-
-
 def _plot_global_raster():
     """Plot the whole-clip, input-only, no-learning raster produced by train.py's
-    pre-piece probe pass (SAVE_DIR/global_input_raster.npz). No-op if absent."""
+    pre-training probe pass (SAVE_DIR/global_input_raster.npz). No-op if absent."""
     fname, epoch_dir = "raster_input_full_clip.png", "global"
     if _already_saved(fname, epoch_dir):
         _skip(fname, epoch_dir)
@@ -457,21 +438,6 @@ def _plot_global_raster():
     ax.grid(True, alpha=0.2)
     if handles is not None:
         ax.legend(handles=handles, loc="upper right", fontsize=9, markerscale=2)
-
-    # ── Piece-index secondary axis: piece_idx's window is
-    #    [piece_idx*HOP_MS, piece_idx*HOP_MS + WINDOW_MS), so t = piece_idx*HOP_MS
-    #    gives the piece's start; every existing 100ms gridline already lines up
-    #    with a piece start when HOP_MS == 100.
-    ax_top = ax.secondary_xaxis(
-        "top",
-        functions=(lambda t: t / _PIECE_HOP_MS, lambda p: p * _PIECE_HOP_MS),
-    )
-    ax_top.set_xlabel(
-        f"Piece index (start; window={_PIECE_WINDOW_MS}ms, hop={_PIECE_HOP_MS}ms)",
-        fontsize=9,
-    )
-    ax_top.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(2))
-    ax_top.tick_params(labelsize=7, labelrotation=0)
 
     plt.tight_layout()
     save(fig, fname, epoch_dir=epoch_dir)
@@ -581,7 +547,7 @@ def _plot_weight_delta(data, keys, name, epoch_idx, epoch_dir):
 def _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir):
     pfx = _pfx(name)
 
-    # Final weight matrix (end of piece)
+    # Final weight matrix (end of epoch)
     if _has(keys, name, "final_weights"):
         W = _get(data, name, "final_weights")
         _plot_weight_matrix(
@@ -607,14 +573,11 @@ def _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir):
             )
 
 
-def _export_fingerprint(piece_label, data, keys, epoch_idx):
-    """Save ONE combined fingerprint image per piece — the in->hid weight matrix
-    plus the input and hidden mean-firing-rate vectors, side by side — into a
-    dedicated, flat `fingerprints/` directory (one file per piece, nothing else)
-    so the sequence can be flipped through as a fingerprint movie. Built from
-    the piece's LAST epoch (i.e. after all repeats), for EVERY piece regardless
-    of `visualize_pieces` (the fingerprint movie always covers the whole clip)."""
-    fname, epoch_dir = f"fingerprint_{piece_label}.png", "fingerprints"
+def _export_fingerprint(data, keys, epoch_idx):
+    """Save ONE combined fingerprint image — the in->hid weight matrix plus the
+    input and hidden mean-firing-rate vectors, side by side — built from the
+    run's LAST epoch (i.e. after all N_EPOCHS exposures)."""
+    fname, epoch_dir = "fingerprint_final.png", None
     if _already_saved(fname, epoch_dir):
         _skip(fname, epoch_dir)
         return
@@ -642,7 +605,7 @@ def _export_fingerprint(piece_label, data, keys, epoch_idx):
     fig = plt.figure(figsize=(20, 5))
     gs  = gridspec.GridSpec(1, 3, width_ratios=[2, 1, 1], figure=fig)
     fig.suptitle(
-        f"Fingerprint — {piece_label}  (after epoch {epoch_idx})",
+        f"Fingerprint — after epoch {epoch_idx}",
         fontsize=14, fontweight="bold"
     )
 
@@ -775,74 +738,61 @@ def _neuron_type_colors(name, n_neurons):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Global (not piece-specific) plots
+# Global (not epoch-specific) plots
 # ══════════════════════════════════════════════════════════════════════════════
 
 _plot_global_raster()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Main loop — pieces, then each piece's own epochs (repeats)
+# Main loop — this run's flat epochs
 # ══════════════════════════════════════════════════════════════════════════════
 
-for piece_num, piece_path in enumerate(piece_dirs):
-    _current_piece_label = os.path.basename(piece_path)   # e.g. "piece_0000"
+for epoch_idx, npz_path in enumerate(epoch_files):
+    is_final_epoch = (epoch_idx == len(epoch_files) - 1)
 
-    piece_epoch_files = sorted(glob_mod.glob(os.path.join(piece_path, "history_epoch_*.npz")))
-    if not piece_epoch_files:
-        print(f"\nWARNING: no history_epoch_*.npz found in {piece_path}, skipping")
+    if is_final_epoch:
+        fp_data = np.load(npz_path, allow_pickle=True)
+        fp_keys = set(fp_data.files)
+        _export_fingerprint(fp_data, fp_keys, epoch_idx)
+
+    if epoch_idx not in _epochs_to_visualize(len(epoch_files)):
         continue
 
-    # The fingerprint movie always covers every piece; the detailed per-epoch
-    # plot suite below still honors visualize_pieces.
-    do_full_viz = piece_num in _pieces_to_visualize(len(piece_dirs))
+    epoch_dir = f"epoch_{epoch_idx}"
+    print(f"\nProcessing {_ptitle(epoch_idx)} — {os.path.basename(npz_path)}")
 
-    for epoch_idx, npz_path in enumerate(piece_epoch_files):
-        is_final_epoch = (epoch_idx == len(piece_epoch_files) - 1)
+    data = fp_data if is_final_epoch else np.load(npz_path, allow_pickle=True)
+    keys = fp_keys if is_final_epoch else set(data.files)
 
-        if is_final_epoch:
-            fp_data = np.load(npz_path, allow_pickle=True)
-            fp_keys = set(fp_data.files)
-            _export_fingerprint(_current_piece_label, fp_data, fp_keys, epoch_idx)
+    # ── Groups ────────────────────────────────────────────────────────────────
+    for name in group_cfg:
+        color = _group_color(name)
+        _plot_spike_raster(data, keys, name, epoch_idx, epoch_dir, color)
+        _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color)
+        _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color)
 
-        if not do_full_viz or epoch_idx not in _epochs_to_visualize(len(piece_epoch_files)):
-            continue
+    # ── Synapses ──────────────────────────────────────────────────────────────
+    for name in synapse_cfg:
+        _plot_weight_evolution(data, keys, name, epoch_idx, epoch_dir)
+        _plot_weight_delta(data, keys, name, epoch_idx, epoch_dir)
+        _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir)
+        _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir)
 
-        epoch_dir = os.path.join(_current_piece_label, f"epoch_{epoch_idx}")
-        print(f"\nProcessing {_ptitle(epoch_idx)} — {os.path.basename(npz_path)}")
-
-        data = fp_data if is_final_epoch else np.load(npz_path, allow_pickle=True)
-        keys = fp_keys if is_final_epoch else set(data.files)
-
-        # ── Groups ────────────────────────────────────────────────────────────
-        for name in group_cfg:
-            color = _group_color(name)
-            _plot_spike_raster(data, keys, name, epoch_idx, epoch_dir, color)
-            _plot_spike_counts(data, keys, name, epoch_idx, epoch_dir, color)
-            _plot_mean_firing_rate(data, keys, name, epoch_idx, epoch_dir, color)
-
-        # ── Synapses ──────────────────────────────────────────────────────────
+    # ── Initial weight matrices (first epoch only) ───────────────────────────
+    if epoch_idx == 0:
         for name in synapse_cfg:
-            _plot_weight_evolution(data, keys, name, epoch_idx, epoch_dir)
-            _plot_weight_delta(data, keys, name, epoch_idx, epoch_dir)
-            _plot_synapse_weight_matrix(data, keys, name, epoch_idx, epoch_dir)
-            _plot_weights_per_neuron(data, keys, name, epoch_idx, epoch_dir)
+            if _has(keys, name, "init_weights"):
+                W = _get(data, name, "init_weights")
+                _plot_weight_matrix(
+                    W,
+                    f"Initial Weight Matrix — {name}",
+                    f"init_weight_matrix_{_pfx(name)}.png",
+                    epoch_dir="epoch_init"
+                )
 
-        # ── Initial weight matrices (piece's first epoch only) ──────────────────
-        if epoch_idx == 0:
-            for name in synapse_cfg:
-                if _has(keys, name, "init_weights"):
-                    W = _get(data, name, "init_weights")
-                    _plot_weight_matrix(
-                        W,
-                        f"Initial Weight Matrix — {name}  |  {_current_piece_label}",
-                        f"init_weight_matrix_{_pfx(name)}.png",
-                        epoch_dir=os.path.join(_current_piece_label, "epoch_init")
-                    )
-
-    # ── Membrane potential: one continuous whole-piece trace, not per-epoch ────
-    if do_full_viz:
-        _plot_piece_membrane_potential(piece_path, _current_piece_label)
+# ── Membrane potential: one continuous whole-run trace, not per-epoch ─────────
+_plot_membrane_potential()
 
 
 # ── finish ────────────────────────────────────────────────────────────────────

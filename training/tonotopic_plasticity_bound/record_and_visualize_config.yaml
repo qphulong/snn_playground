@@ -47,8 +47,7 @@ record:
 visualize:
 
   visualize_samples: [0]
-  visualize_pieces:  []   # empty = all pieces
-  visualize_epoch:   []   # empty = all epochs (repeats) within each piece
+  visualize_epoch:   []   # empty = all epochs (full-clip exposures)
 
   track_weight_delta: false
 

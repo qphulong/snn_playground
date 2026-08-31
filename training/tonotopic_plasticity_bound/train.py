@@ -13,8 +13,9 @@ import time
 start = time.time()
 
 # ============================================================
-# Dataset — one clip, sliced into overlapping pieces (see "Piece framing"
-# below); each piece trains independently from the SAME shared init weights.
+# Dataset — one clip, fed to the network in full (see "Training exposure"
+# below). The network starts from a single shared init and is NEVER reset
+# again: state persists continuously across every epoch of the run.
 # ============================================================
 
 # AUDIO_PATH = "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00002.m4a"
@@ -23,10 +24,11 @@ start = time.time()
 AUDIO_PATH = "datasets/vox1/dev_03/id10402/lWGGqR2uxFY/00004.m4a"
 print(f"Audio: {AUDIO_PATH}")
 
-# -- Piece framing --
-WINDOW_MS = 200   # piece length
-HOP_MS    = 100   # slide between consecutive pieces (50% overlap)
-N_REPEATS = 8    # repeated exposures per piece == "samples" within its epoch
+# -- Training exposure --
+N_EPOCHS = 64  # full-clip exposures. Network state (v, a, vth, trace_r,
+               # weights) is reset ONCE before epoch 0 and never again, so it
+               # persists/accumulates continuously across the whole run.
+CLIP_MS  = 2000   # only train on the first CLIP_MS of the audio (None = whole clip)
 
 # -- Input encoding gains (passed to compute_spike_input_current) --
 SUST_GAIN  = 0.3    # sustained-energy neurons
@@ -178,7 +180,7 @@ Apost_inh_matrix = APOST_INH    * _jaccard
 del _ch_h, _dist_ch_hh, _overlap_ch, _jaccard
 
 # ============================================================
-# Initialise weight matrices (shared init — every piece restores to this)
+# Initialise weight matrices (shared init — the run restores to this once)
 # ============================================================
 
 # Excitatory: formula-shaped, column-normalised to NORM_LIMIT_EXC
@@ -393,7 +395,8 @@ net.store('init')
 
 
 # ============================================================
-# Encode the whole clip once, then slice into WINDOW_MS/HOP_MS pieces.
+# Encode the whole clip once — this is the entire training signal, fed to
+# the network start to finish, once per epoch.
 # ============================================================
 
 try:
@@ -412,20 +415,21 @@ try:
 except Exception as e:
     raise RuntimeError(f"Error encoding audio {AUDIO_PATH}: {e}") from e
 
-print(f"Clip length: {T_sim} ms")
+print(f"Clip length (full): {T_sim} ms")
 
-N_PIECES = (T_sim - WINDOW_MS) // HOP_MS + 1
-if N_PIECES < 1:
-    raise ValueError(f"Clip ({T_sim} ms) shorter than one window ({WINDOW_MS} ms)")
-print(f"{N_PIECES} pieces of {WINDOW_MS}ms (hop {HOP_MS}ms), {N_REPEATS} repeats each")
+if CLIP_MS is not None and CLIP_MS < T_sim:
+    T_sim = CLIP_MS
+    I_sim = I_sim[:, :T_sim]
+print(f"Clip length (trained): {T_sim} ms")
+print(f"{N_EPOCHS} epochs over the {T_sim}ms clip")
 
 
 # ============================================================
 # Global input-only preview pass (no learning, no hidden layer).
 #
-# Runs the WHOLE clip once through an isolated probe copy of the input
-# layer, before any piece-wise training starts. This never touches G_in,
-# G_h, S_ih, S_hh, or the 'init' snapshot used by training — it is a
+# Runs the trained clip (post-CLIP_MS truncation) once through an isolated
+# probe copy of the input layer, before training starts. This never touches
+# G_in, G_h, S_ih, S_hh, or the 'init' snapshot used by training — it is a
 # separate NeuronGroup/Network built solely to produce a global raster.
 # ============================================================
 
@@ -452,102 +456,90 @@ print(f"Global input raster: {len(mon_probe.i)} spikes over {T_sim}ms "
 
 
 # ============================================================
-# Training loop — pieces, then each piece's own epochs.
+# Training loop — N_EPOCHS full-clip exposures.
 #
-# Every piece restores to the SAME shared init weights (never carried over
-# from the previous piece). Within a piece, each repeated exposure is its
-# own recorder epoch — its own history_epoch_NNN.npz, with NNN numbered
-# from 0 independently for every piece (piece_0000/epoch_000..031,
-# piece_0001/epoch_000..031, ...). The underlying Brian2 clock is NOT reset
-# between repeats within a piece (no net.restore there), so neuron/synapse
-# state carries over continuously — only the recorder's per-epoch
-# bookkeeping resets, so each repeat's plots read as [0, WINDOW_MS) local time.
+# The network restores to the shared init ONCE, before epoch 0, and is never
+# reset again: the underlying Brian2 clock advances continuously through
+# every epoch (no net.restore between them), so neuron/synapse state
+# (v, a, vth, trace_r, weights) persists and keeps evolving across the whole
+# run. Only the recorder's per-epoch bookkeeping resets between epochs, so
+# each epoch's plots still read as their own [0, T_sim) local time.
 # ============================================================
 
-for piece_idx in range(N_PIECES):
-    t_start = piece_idx * HOP_MS
-    t_end   = t_start + WINDOW_MS
+# ── Reset to the shared clean init, once ──────────────────────────────────
+# restore resets: clock→0, v, a, vth, trace_r, apre, apost,
+#                 and all monitor buffers.
+net.restore('init')
 
+I_tiled = np.tile(I_sim, (1, N_EPOCHS))   # (N_IN, T_sim * N_EPOCHS)
+G_in.namespace["I_timed"] = TimedArray(I_tiled.T.astype(float), dt=DT_SIM)
+
+w_ih = w_ih_init.copy()
+w_hh = w_hh_init.copy()
+S_ih.w    = w_ih[src_ih, tgt_ih]
+S_ih.apre  = 0
+S_ih.apost = 0
+S_ih.r1 = 0; S_ih.r2 = 0; S_ih.o1 = 0; S_ih.o2 = 0   # triplet detectors
+
+S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
+S_hh.apre_inh  = 0
+S_hh.apost_inh = 0
+
+for epoch_idx in range(N_EPOCHS):
     print(f"\n{'='*60}")
-    print(f"Piece {piece_idx}/{N_PIECES - 1}  t=[{t_start},{t_end})ms")
+    print(f"Epoch {epoch_idx}/{N_EPOCHS - 1}")
     print(f"{'='*60}")
 
-    piece_save_dir = os.path.join(SAVE_DIR, f"piece_{piece_idx:04d}")
+    # Each epoch is its own recorder epoch -> its own npz file. The Brian2
+    # clock keeps advancing through I_tiled (no restore here), so we anchor
+    # _elapsed_ms to the clock's actual position instead of letting
+    # reset_epoch() zero it, keeping this epoch's recorded times relative to
+    # ITS OWN start rather than the run's start.
+    recorder.reset_epoch()
+    recorder._elapsed_ms = float(epoch_idx * T_sim)
 
-    I_piece = I_sim[:, t_start:t_end]                 # (N_IN, WINDOW_MS)
-    I_tiled = np.tile(I_piece, (1, N_REPEATS))         # (N_IN, WINDOW_MS * N_REPEATS)
+    # ── Record: before ─────────────────────────────────────────────────────
+    recorder.before_sample(0)
 
-    # ── Reset to the shared clean init for this piece ─────────────────────────
-    # restore resets: clock→0, v, a, vth, trace_r, apre, apost,
-    #                 and all monitor buffers.
-    net.restore('init')
+    # ── Simulate this epoch. No restore before/after — state carries over,
+    #    giving continuous exposure across the whole run rather than resets.
+    net.run(T_sim * DT_SIM)
 
-    G_in.namespace["I_timed"] = TimedArray(I_tiled.T.astype(float), dt=DT_SIM)
+    # ── Extract updated weights ────────────────────────────────────────────
+    # Both excitatory and inhibitory are L1-normalised every 25 ms.
+    w_ih_new = np.zeros((N_IN, N_H))
+    w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
+    w_ih = w_ih_new
 
-    w_ih = w_ih_init.copy()
-    w_hh = w_hh_init.copy()
-    S_ih.w    = w_ih[src_ih, tgt_ih]
-    S_ih.apre  = 0
-    S_ih.apost = 0
-    S_ih.r1 = 0; S_ih.r2 = 0; S_ih.o1 = 0; S_ih.o2 = 0   # triplet detectors
+    w_hh_new = np.zeros((N_H, N_H))
+    w_hh_new[_src_hh, _tgt_hh] = np.array(S_hh.w_inh)
+    w_hh = w_hh_new
 
-    S_hh.w_inh     = w_hh[_src_hh, _tgt_hh]
-    S_hh.apre_inh  = 0
-    S_hh.apost_inh = 0
+    # ── Record: after ──────────────────────────────────────────────────────
+    recorder.after_sample(
+        0,
+        T_sim / 1000.0,
+        w_matrices={
+            "in->hid":  w_ih,
+            "hid->hid": w_hh,
+        }
+    )
 
-    for rep in range(N_REPEATS):
-        print(f"  [piece {piece_idx}, epoch {rep}/{N_REPEATS - 1}]")
+    # ── Save this epoch ─────────────────────────────────────────────────────
+    recorder.save_epoch(
+        epoch_idx,
+        save_dir=SAVE_DIR,
+        final_weights={
+            "in->hid":  w_ih,
+            "hid->hid": w_hh,
+        },
+        init_weights=init_weights if epoch_idx == 0 else None,
+    )
 
-        # Each repeat is its own recorder epoch -> its own npz file. The
-        # Brian2 clock keeps advancing through I_tiled (no restore here), so
-        # we anchor _elapsed_ms to the clock's actual position instead of
-        # letting reset_epoch() zero it, keeping this epoch's recorded
-        # times relative to ITS OWN start rather than the piece's start.
-        recorder.reset_epoch()
-        recorder._elapsed_ms = float(rep * WINDOW_MS)
-
-        # ── Record: before ─────────────────────────────────────────────────────
-        recorder.before_sample(0)
-
-        # ── Simulate this repeat. No restore between repeats — state carries
-        #    over, giving continuous repeated exposure rather than N resets.
-        net.run(WINDOW_MS * DT_SIM)
-
-        # ── Extract updated weights ────────────────────────────────────────────
-        # Both excitatory and inhibitory are L1-normalised every 100 ms.
-        w_ih_new = np.zeros((N_IN, N_H))
-        w_ih_new[src_ih, tgt_ih] = np.array(S_ih.w)
-        w_ih = w_ih_new
-
-        w_hh_new = np.zeros((N_H, N_H))
-        w_hh_new[_src_hh, _tgt_hh] = np.array(S_hh.w_inh)
-        w_hh = w_hh_new
-
-        # ── Record: after ──────────────────────────────────────────────────────
-        recorder.after_sample(
-            0,
-            WINDOW_MS / 1000.0,
-            w_matrices={
-                "in->hid":  w_ih,
-                "hid->hid": w_hh,
-            }
-        )
-
-        # ── Save this repeat as its own epoch, in this piece's own folder ──────
-        recorder.save_epoch(
-            rep,
-            save_dir=piece_save_dir,
-            final_weights={
-                "in->hid":  w_ih,
-                "hid->hid": w_hh,
-            },
-            init_weights=init_weights if rep == 0 else None,
-        )
-
-    # ── Save this piece's continuous membrane-potential trace (spans all
-    #    N_REPEATS repeats) once, rather than duplicating it into every
-    #    repeat's history_epoch_NNN.npz ────────────────────────────────────────
-    recorder.save_piece_membrane(piece_save_dir)
+# ── Save the run's continuous membrane-potential trace (spans all N_EPOCHS
+#    epochs) once, rather than duplicating it into every epoch's
+#    history_epoch_NNN.npz ────────────────────────────────────────────────────
+recorder.save_piece_membrane(SAVE_DIR)
 
 
 # ============================================================
