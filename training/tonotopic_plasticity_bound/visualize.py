@@ -16,7 +16,6 @@ Output structure:
   vizs/epoch_1/                — plots for epoch 1
   ...
   vizs/membrane_potential/     — the run's one continuous membrane-potential trace
-  vizs/global/                 — whole-clip, no-learning input raster
   vizs/fingerprint_final.png   — converged in->hid weights + firing rates
 
 Usage:
@@ -399,50 +398,6 @@ def _plot_membrane_potential():
 
 
 
-def _plot_global_raster():
-    """Plot the whole-clip, input-only, no-learning raster produced by train.py's
-    pre-training probe pass (SAVE_DIR/global_input_raster.npz). No-op if absent."""
-    fname, epoch_dir = "raster_input_full_clip.png", "global"
-    if _already_saved(fname, epoch_dir):
-        _skip(fname, epoch_dir)
-        return
-
-    npz_path = os.path.join(SCRIPT_DIR, "global_input_raster.npz")
-    if not os.path.exists(npz_path):
-        return
-
-    data      = np.load(npz_path, allow_pickle=True)
-    raster_i  = data["raster_i"]
-    raster_t  = data["raster_t"]
-    n_neurons = int(data["n_neurons"])
-    color_array, handles = _neuron_type_colors("input", n_neurons)
-
-    duration_ms = float(data["duration_ms"]) if "duration_ms" in data.files else (
-        float(raster_t.max()) if len(raster_t) > 0 else 0.0
-    )
-
-    fig, ax = plt.subplots(figsize=(20, 5))
-    for t_mark in np.arange(0, duration_ms, 100):
-        ax.axvline(t_mark, color="gray", lw=0.3, alpha=0.4, zorder=0)
-    if len(raster_t) > 0:
-        c = color_array[raster_i.astype(int)] if color_array is not None else "steelblue"
-        ax.scatter(raster_t, raster_i, s=3, c=c, linewidths=0, rasterized=True, zorder=1)
-    ax.set_title(
-        f"Global Input Raster — full clip, no learning  ({len(raster_t):,} spikes)",
-        fontsize=13, fontweight="bold"
-    )
-    ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Neuron index")
-    ax.set_xlim(left=0)
-    ax.set_ylim(bottom=0, top=n_neurons - 1)
-    ax.grid(True, alpha=0.2)
-    if handles is not None:
-        ax.legend(handles=handles, loc="upper right", fontsize=9, markerscale=2)
-
-    plt.tight_layout()
-    save(fig, fname, epoch_dir=epoch_dir)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Per-synapse plot routines
 # ══════════════════════════════════════════════════════════════════════════════
@@ -735,13 +690,6 @@ def _neuron_type_colors(name, n_neurons):
     color_array = np.array([pos_color[i % per_band] for i in range(n_neurons)])
     handles = [mpatches.Patch(color=col, label=nm) for nm, _, col in band]
     return color_array, handles
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Global (not epoch-specific) plots
-# ══════════════════════════════════════════════════════════════════════════════
-
-_plot_global_raster()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

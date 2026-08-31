@@ -20,12 +20,12 @@ start = time.time()
 
 # AUDIO_PATH = "datasets/vox1/dev_01/id10002/C7k7C-PDvAA/00002.m4a"
 # AUDIO_PATH = "datasets/vox1/dev_05/id10805/I2D_O4DHh2Q/00002.m4a"
-# AUDIO_PATH = "datasets/vox1/dev_06/id11185/qvtO6iHq_Ko/00006.m4a"
-AUDIO_PATH = "datasets/vox1/dev_03/id10402/lWGGqR2uxFY/00004.m4a"
+AUDIO_PATH = "datasets/vox1/dev_06/id11185/qvtO6iHq_Ko/00006.m4a"
+# AUDIO_PATH = "datasets/vox1/dev_03/id10402/lWGGqR2uxFY/00004.m4a"
 print(f"Audio: {AUDIO_PATH}")
 
 # -- Training exposure --
-N_EPOCHS = 64  # full-clip exposures. Network state (v, a, vth, trace_r,
+N_EPOCHS = 16  # full-clip exposures. Network state (v, a, vth, trace_r,
                # weights) is reset ONCE before epoch 0 and never again, so it
                # persists/accumulates continuously across the whole run.
 CLIP_MS  = 2000   # only train on the first CLIP_MS of the audio (None = whole clip)
@@ -33,7 +33,7 @@ CLIP_MS  = 2000   # only train on the first CLIP_MS of the audio (None = whole c
 # -- Input encoding gains (passed to compute_spike_input_current) --
 SUST_GAIN  = 0.3    # sustained-energy neurons
 ONSET_GAIN = 3.0    # onset (transient) neurons — bumped up from 2.25 to fire more;
-                     # check vizs/global/raster_input_full_clip.png (crimson) and retune
+                     # check the input raster's crimson (onset) neurons and retune
 PHASE_GAIN = 1.0    # phase-locking neurons (unused: phase_per_band=0 below)
 
 SAVE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -422,37 +422,6 @@ if CLIP_MS is not None and CLIP_MS < T_sim:
     I_sim = I_sim[:, :T_sim]
 print(f"Clip length (trained): {T_sim} ms")
 print(f"{N_EPOCHS} epochs over the {T_sim}ms clip")
-
-
-# ============================================================
-# Global input-only preview pass (no learning, no hidden layer).
-#
-# Runs the trained clip (post-CLIP_MS truncation) once through an isolated
-# probe copy of the input layer, before training starts. This never touches
-# G_in, G_h, S_ih, S_hh, or the 'init' snapshot used by training — it is a
-# separate NeuronGroup/Network built solely to produce a global raster.
-# ============================================================
-
-G_in_probe = NeuronGroup(
-    N_IN, eqs_in,
-    threshold="v > v_th_in",
-    reset="v=0; a+=beta",
-    refractory=2 * ms,
-    method="euler"
-)
-G_in_probe.namespace["I_timed"] = TimedArray(I_sim.T.astype(float), dt=DT_SIM)
-mon_probe = SpikeMonitor(G_in_probe)
-Network(G_in_probe, mon_probe).run(T_sim * DT_SIM)
-
-np.savez_compressed(
-    os.path.join(SAVE_DIR, "global_input_raster.npz"),
-    raster_i=np.array(mon_probe.i, dtype=np.int32),
-    raster_t=np.array(mon_probe.t / ms, dtype=np.float32),
-    n_neurons=np.int32(N_IN),
-    duration_ms=np.float32(T_sim),
-)
-print(f"Global input raster: {len(mon_probe.i)} spikes over {T_sim}ms "
-      f"-> global_input_raster.npz")
 
 
 # ============================================================
